@@ -60,16 +60,29 @@ build.bat
 **发布包结构：**
 
 ```
-发布包/
-├─ QuickPythonIDE.exe   # 由 build.bat / CI 生成
-└─ ui/                 # 原样复制，与 exe 同级
+发布包/                          # 以下均与 QuickPythonIDE.exe 同级
+├─ QuickPythonIDE.exe           # 由 build.bat / CI 生成
+├─ ui/                          # 原样复制（外置界面，不打包进 exe）
+├─ root/                        # 自带的【嵌入式 Python 解释器池】（可选）
+│  ├─ python-3.15.0-embed-amd64/  ← python.exe（用于版本切换，免装系统 Python）
+│  └─ python-3.11.0-embed-amd64/
+└─ project/                     # 用户工程目录（IDE 工程树默认从这里开始）
+   ├─ calculator/main.py
+   ├─ muonline_bmd_tool/main.py
+   ├─ Image Viewer/main.py
+   └─ csv tool/main.py
 ```
+
+**关于 `root/`（嵌入式解释器）：**
+- 把从 python.org 下载的 *Windows embeddable package* 解压到 `root/` 下即可在版本下拉框里选用，纯绿色、不依赖本机是否安装 Python。
+- 首次用某嵌入解释器执行 `pip install` 时，IDE 会自动：① 取消该解释器 `_pth` 文件里被注释的 `import site`（否则第三方包无法 import）；② 通过 `ensurepip` 安装 pip（内置 wheel，无需联网）。这两项只改写 `root/` 下的解释器，绝不改动系统 Python。
 
 **迭代更新规则：**
 - 修改界面、前端编辑器功能：**只替换 `ui/` 文件夹**，exe 不用重新打包。
+- 增加/更换可切换的 Python 版本：**往 `root/` 里加/换嵌入解释器目录**即可，exe 不用重打包。
 - 需要新增底层能力（例如新的 RPC、停止逻辑变更）：修改 `main.py` → 重新打包 exe。
 
-> 路径兼容：`main.py` 在开发环境下用脚本所在目录定位 `ui/`，打包成 exe 后用 exe 同级目录定位，两种环境都不用手动配置。
+> 路径兼容：`main.py` 在开发环境下用脚本所在目录定位 `ui/`，打包成 exe 后用 exe 同级目录定位；若同级存在 `project/` 则工程树默认以它为根，否则回退到 exe 根目录。
 
 ## 测试 / 编译（GitHub Actions）
 
