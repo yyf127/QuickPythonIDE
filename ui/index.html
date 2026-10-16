@@ -11,9 +11,9 @@
   <header class="topbar">
     <span class="logo">🐍 QuickPythonIDE</span>
     <div class="actions">
-      <button id="btn-new" title="提示">新建</button>
+      <button id="btn-new" title="在根目录新建文件">新建</button>
       <button id="btn-save" title="Ctrl+S">保存</button>
-      <button id="btn-run" title="运行当前文件">▶ 运行</button>
+      <button id="btn-run" title="Ctrl+R 运行当前文件">▶ 运行</button>
       <button id="btn-stop" disabled title="阶段3支持">■ 停止</button>
     </div>
   </header>
@@ -29,9 +29,28 @@
 
     <section class="editor-pane">
       <div id="tabs" class="tabs"></div>
+
+      <div class="view-switch">
+        <button class="view-btn active" data-view="code">代码</button>
+        <button class="view-btn" data-view="design">窗体设计</button>
+      </div>
+
       <div class="editor-host">
         <textarea id="code"></textarea>
+
+        <div id="designer" class="designer hidden">
+          <div class="palette">
+            <span class="palette-label">控件：</span>
+            <button data-type="Button">+ 按钮</button>
+            <button data-type="Label">+ 标签</button>
+            <button data-type="TextBox">+ 文本框</button>
+            <button id="btn-export-form">导出 form.ui.json</button>
+            <span class="muted">（拖动控件排版，导出为 JSON）</span>
+          </div>
+          <div id="form-canvas" class="form-canvas"></div>
+        </div>
       </div>
+
       <div class="console">
         <div class="console-head">运行日志</div>
         <pre id="log" class="log"></pre>
@@ -45,6 +64,9 @@
       </div>
     </aside>
   </main>
+
+  <!-- 右键菜单 -->
+  <div id="ctx-menu" class="ctx-menu hidden"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
