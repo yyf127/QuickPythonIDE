@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+.kvstore.json
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
