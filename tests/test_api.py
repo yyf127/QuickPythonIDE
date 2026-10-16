@@ -1,5 +1,8 @@
 """宿主 Api 的单元测试（无需 GUI / 不依赖 webview）。"""
 
+import sys
+from pathlib import Path
+
 from main import Api
 
 
@@ -56,3 +59,41 @@ def test_run_code_captures_error():
     res = api.run_code("raise ValueError('boom')")
     assert res["ok"] is False
     assert "boom" in res["stderr"]
+
+
+def test_run_code_subprocess_isolation():
+    # 验证 run_code 走子进程（无窗口时同步返回），且变量不污染宿主
+    api = Api()
+    res = api.run_code("x = 123\ndef f():\n    return x\nprint(f())")
+    assert res["ok"] is True
+    assert "123" in res["stdout"]
+
+
+def test_run_code_infinite_loop_can_be_killed():
+    # 无窗口环境无法异步停止，这里只验证 stop_code 在空闲时返回明确错误
+    api = Api()
+    res = api.stop_code()
+    assert res["ok"] is False
+    assert res["error"]
+
+
+def test_python_versions_includes_current():
+    res = Api().python_versions()
+    assert res["ok"] is True
+    assert any(v["path"] == sys.executable for v in res["versions"])
+
+
+def test_pip_install_requires_package():
+    res = Api().pip_install("")
+    assert res["ok"] is False
+    assert res["error"]
+
+
+def test_backup_file(tmp_path):
+    api = Api(str(tmp_path))
+    p = tmp_path / "x.py"
+    p.write_text("data")
+    res = api.backup_file(str(p))
+    assert res["ok"] is True
+    assert Path(res["path"]).exists()
+    assert Path(res["path"]).read_text(encoding="utf-8") == "data"

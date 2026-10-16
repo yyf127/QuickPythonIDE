@@ -1,9 +1,11 @@
-/* QuickPythonIDE 前端逻辑（阶段2）
+/* QuickPythonIDE 前端逻辑（阶段3）
  * 通过 window.pywebview.api 调用宿主 RPC：
  *   list_dir(path) / load_file(path) / save_file(path, content) /
- *   run_code(code, path) / delete_path(path)
+ *   delete_path(path) / backup_file(path) / python_versions() /
+ *   run_code(code, path, python) / stop_code() / pip_install(packages, python)
  *
- * 阶段2 新增：工程树展开/折叠 + 右键菜单、多标签关闭、代码/窗体设计视图切换。
+ * 阶段3 新增：run_code 改为异步子进程执行，输出经 window.appendOutput 实时推回，
+ *           结束经 window.onRunFinished；新增停止、Python 版本切换、pip 安装、备份。
  */
 (function () {
   "use strict";
@@ -293,13 +295,70 @@
     if (!activePath) { logLine("没有打开的文件，无法运行", "err"); return; }
     const tab = openTabs.get(activePath);
     tab.content = editor.getValue();
+    const py = document.getElementById("py-version").value || "";
     clearLog();
-    logLine("运行 " + activePath + " ...", "ok");
-    const res = await api().run_code(tab.content, activePath);
-    if (res.stdout) logLine(res.stdout, "out");
-    if (res.stderr) logLine(res.stderr, "err");
-    logLine(res.ok ? "--- 运行结束（正常） ---" : "--- 运行结束（异常） ---",
-            res.ok ? "ok" : "err");
+    logLine("运行 " + activePath + (py ? "  [使用 " + py + "]" : "") + " ...", "ok");
+    const res = await api().run_code(tab.content, activePath, py);
+    if (!res.ok) {
+      logLine(res.error || "运行启动失败", "err");
+      return;
+    }
+    // 异步模式：输出经 window.appendOutput 实时推回，结束经 window.onRunFinished
+    document.getElementById("btn-run").disabled = true;
+    document.getElementById("btn-stop").disabled = false;
+  }
+
+  async function stopActive() {
+    const res = await api().stop_code();
+    if (res.ok) logLine("已发送停止信号，等待进程退出…", "warn");
+    else logLine(res.error || "停止失败", "err");
+  }
+
+  // 宿主推流回调：实时把子进程输出写入日志面板
+  window.appendOutput = function (text, kind) {
+    logLine(text, kind);
+  };
+  // 宿主通知运行结束：恢复按钮状态
+  window.onRunFinished = function (ok, rc) {
+    document.getElementById("btn-run").disabled = false;
+    document.getElementById("btn-stop").disabled = true;
+  };
+
+  async function loadPythonVersions() {
+    const sel = document.getElementById("py-version");
+    if (!sel) return;
+    const res = await api().python_versions();
+    if (res.ok && res.versions.length) {
+      res.versions.forEach(function (v) {
+        const o = document.createElement("option");
+        o.value = v.path;
+        o.textContent = v.label || v.path;
+        sel.appendChild(o);
+      });
+    } else {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "默认 Python";
+      sel.appendChild(o);
+    }
+  }
+
+  async function installPip() {
+    const inp = document.getElementById("pip-pkg");
+    const pkg = inp.value.trim();
+    if (!pkg) { logLine("请输入要安装的包名", "err"); return; }
+    const py = document.getElementById("py-version").value || "";
+    logLine("pip install " + pkg + (py ? "  [" + py + "]" : "") + " ...", "warn");
+    const res = await api().pip_install(pkg, py);
+    if (res.output) logLine(res.output, "out");
+    logLine(res.ok ? "--- 安装完成 ---" : "--- 安装失败 ---", res.ok ? "ok" : "err");
+  }
+
+  async function backupActive() {
+    if (!activePath) { logLine("没有打开的文件", "err"); return; }
+    const res = await api().backup_file(activePath);
+    if (res.ok) logLine("已备份: " + res.path, "ok");
+    else logLine(res.error || "备份失败", "err");
   }
 
   // ---------------- 窗体设计器 ----------------
@@ -401,14 +460,14 @@
 
     document.getElementById("btn-run").onclick = runActive;
     document.getElementById("btn-save").onclick = saveActive;
+    document.getElementById("btn-stop").onclick = stopActive;
+    document.getElementById("btn-pip").onclick = installPip;
+    document.getElementById("btn-backup").onclick = backupActive;
     document.getElementById("btn-new").onclick = function () {
       ctxPath = rootPath; ctxIsDir = true; newFile(".py");
     };
-    document.getElementById("btn-stop").onclick = function () {
-      logLine("停止功能将在阶段3通过 subprocess 子进程实现", "err");
-    };
     document.getElementById("btn-up").onclick = function () {
-      // 阶段2 用展开/折叠代替导航，这里刷新根目录
+      // 用展开/折叠代替导航，这里刷新根目录
       renderRoot();
     };
 
@@ -457,6 +516,7 @@
     });
 
     renderRoot();
+    loadPythonVersions();
   }
 
   if (window.pywebview) {

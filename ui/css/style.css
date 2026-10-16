@@ -50,6 +50,30 @@ html, body {
 .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 #btn-run { color: var(--ok); }
 #btn-stop { color: var(--err); }
+.actions select, .actions .pip-input {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  margin-left: 6px;
+  font-size: 12px;
+  max-width: 220px;
+}
+.actions select { cursor: pointer; }
+.actions .pip-group { display: inline-flex; align-items: center; margin-left: 6px; }
+.actions .pip-input { margin-left: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.actions .pip-group button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.actions .pip-group button:hover { border-color: var(--accent); }
 
 /* ---------- 三栏布局 ---------- */
 .layout {
