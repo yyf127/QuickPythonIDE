@@ -7,6 +7,14 @@
   因为 UI 在可执行文件之外，改界面/加编辑器功能都**不用重新打包 exe**
   （详见项目计划文档）。
 
+部署包目录约定（exe 同级）
+--------------------------
+- ``ui/``            外置界面（index.html / css / js）。
+- ``root/``          自带的【嵌入式 Python 解释器池】（如
+                    ``root/python-3.15.0-embed-amd64/python.exe``），
+                    用于版本切换，不依赖系统是否安装 Python。
+- ``project/``       用户工程目录（IDE 工程树默认从此处开始）。
+
 阶段3 能力范围（相比阶段2）
 --------------------------
 - ``run_code`` 改为 **subprocess 子进程** 执行用户代码（阶段1 是 exec 主线程阻塞）。
@@ -59,7 +67,13 @@ class Api:
     """暴露给前端 JavaScript 的 RPC 接口（通过 pywebview 桥接）。"""
 
     def __init__(self, root: str | None = None) -> None:
-        self.root = Path(root) if root else APP_ROOT
+        if root:
+            self.root = Path(root)
+        elif (APP_ROOT / "project").is_dir():
+            # 部署包约定：用户工程放在 exe 同级的 project/ 目录下
+            self.root = APP_ROOT / "project"
+        else:
+            self.root = APP_ROOT
         self._proc: subprocess.Popen | None = None  # 当前运行的用户代码子进程
         self._tmp: str | None = None               # 临时脚本文件路径
         self._reader_threads: list[threading.Thread] = []
@@ -134,11 +148,22 @@ class Api:
 
     # ============================================================ 解释器/依赖
     def python_versions(self) -> dict:
-        """列出本机可用 Python 解释器，供前端做版本切换下拉框。"""
+        """列出可用 Python 解释器，供前端做版本切换下拉框。
+
+        扫描来源：
+        1. 当前解释器（即运行本 IDE 的 python）；
+        2. 系统 PATH 中的 python / python3.x；
+        3. Windows ``py`` 启动器（``py -0``）；
+        4. 部署包约定目录 ``root/`` 下自带的【嵌入式解释器】
+           （如 ``root/python-3.15.0-embed-amd64/python.exe``），
+           用于纯绿色、不依赖系统 Python 的版本切换。
+        """
+        import re
+
         found: list[dict] = []
         seen: set[str] = set()
 
-        def add(exe: str) -> None:
+        def add(exe: str, label: str | None = None, embedded: bool = False) -> None:
             exe = os.path.abspath(exe)
             if exe in seen:
                 return
@@ -155,7 +180,9 @@ class Api:
                 ver = (out.stdout or out.stderr).strip()
             except Exception:  # noqa: BLE001, S110
                 pass
-            found.append({"path": exe, "label": ver or exe})
+            found.append(
+                {"path": exe, "label": label or ver or exe, "embedded": embedded}
+            )
 
         try:
             add(sys.executable)
@@ -167,6 +194,7 @@ class Api:
                     "python3.11.exe",
                     "python3.12.exe",
                     "python3.13.exe",
+                    "python3.15.exe",
                 ):
                     p = os.path.join(d, cand)
                     if os.path.exists(p):
@@ -175,8 +203,6 @@ class Api:
             out = subprocess.run(
                 ["py", "-0"], check=False, capture_output=True, text=True, timeout=5
             ).stdout
-            import re
-
             for line in out.splitlines():
                 m = re.search(r"-V:([\d.]+)", line) or re.search(
                     r"Python\s+([\d.]+)", line
@@ -186,8 +212,21 @@ class Api:
                         {
                             "path": "py -" + m.group(1),
                             "label": "Python " + m.group(1) + " (py launcher)",
+                            "embedded": False,
                         }
                     )
+            # 部署包自带嵌入式解释器（root/）
+            root_dir = APP_ROOT / "root"
+            if root_dir.is_dir():
+                for sub in sorted(root_dir.iterdir()):
+                    if sub.is_dir() and (sub / "python.exe").exists():
+                        m = re.search(r"(\d+\.\d+\.\d+)", sub.name)
+                        ver = m.group(1) if m else sub.name
+                        add(
+                            str(sub / "python.exe"),
+                            label=f"Python {ver} (embed)",
+                            embedded=True,
+                        )
         except Exception:  # noqa: BLE001, S110 - 扫描失败也不阻塞 IDE
             pass
 
@@ -204,7 +243,12 @@ class Api:
         if not pkgs:
             return {"ok": False, "error": "未指定要安装的包"}
         try:
-            cmd = self._resolve_python(python) + ["-m", "pip", "install"] + pkgs
+            cmd = self._resolve_python(python)
+            # 选中嵌入解释器时，先确保 site 启用且 pip 可用
+            prep = self._ready_pip(cmd[0])
+            if not prep["ok"]:
+                return {"ok": False, "output": prep["output"]}
+            cmd = cmd + ["-m", "pip", "install"] + pkgs
             proc = subprocess.run(
                 cmd,
                 check=False,
@@ -254,13 +298,79 @@ class Api:
     def _resolve_python(self, python: str | None) -> list[str]:
         if not python:
             return [sys.executable]
-        return shlex.split(python)  # 支持 "py -3.11" 这类带参数的写法
+        # 整段就是一个存在的可执行文件（可能含空格，如嵌入解释器路径）→ 直接用
+        if os.path.isfile(python):
+            return [python]
+        # 否则按 shell 方式拆分，支持 "py -3.11" 这类带参数的写法
+        return shlex.split(python)
+
+    # ----------------------------------------------------- 嵌入解释器准备
+    def _fix_embedded_pth(self, python_exe: str) -> None:
+        """为 ``root/`` 下的嵌入解释器取消注释 ``import site``（仅对其生效）。
+
+        嵌入版默认 ``<ver>._pth`` 里 ``import site`` 被注释，导致 pip 安装的
+        第三方包无法被 import；启用后即可正常使用。系统 Python 无此文件，跳过。
+        """
+        try:
+            pdir = Path(python_exe).resolve().parent
+            root_dir = (APP_ROOT / "root").resolve()
+            # 只处理 root/ 下的嵌入解释器，绝不改动系统 Python
+            if root_dir not in pdir.resolve().parents:
+                return
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            for name in os.listdir(pdir):
+                if name.endswith("._pth"):
+                    p = pdir / name
+                    txt = p.read_text(encoding="utf-8")
+                    if "#import site" in txt:
+                        p.write_text(
+                            txt.replace("#import site", "import site"),
+                            encoding="utf-8",
+                        )
+                    break
+        except Exception:  # noqa: BLE001, S110
+            pass
+
+    def _ready_pip(self, python_exe: str) -> dict:
+        """确保嵌入解释器可运行 pip：启用 site + 必要时用 ensurepip 安装。
+
+        系统 Python 若已自带 pip 则直接返回就绪；none 时才触发 ensurepip
+        （内置 wheel，无需联网）。
+        """
+        python_exe = os.path.abspath(python_exe)
+        self._fix_embedded_pth(python_exe)
+        chk = subprocess.run(
+            [python_exe, "-m", "pip", "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if chk.returncode == 0:
+            return {"ok": True, "output": "pip 已就绪"}
+        res = subprocess.run(
+            [python_exe, "-m", "ensurepip", "--upgrade"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        if res.returncode == 0:
+            return {"ok": True, "output": "已通过 ensurepip 安装 pip"}
+        return {
+            "ok": False,
+            "output": "无法为嵌入解释器准备 pip："
+            + ((res.stderr or res.stdout or "")[:300]),
+        }
 
     def _build_cmd(self, code: str, python: str | None) -> tuple[list[str], str]:
         fd, tmp = tempfile.mkstemp(suffix=".py", prefix="qpython_")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(code)
         cmd = self._resolve_python(python) + ["-u", tmp]  # -u 关闭缓冲，实时输出
+        self._fix_embedded_pth(cmd[0])  # 嵌入解释器需启用 import site（仅影响 root/ 下）
         return cmd, tmp
 
     def _has_window(self) -> bool:
