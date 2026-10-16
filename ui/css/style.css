@@ -1,0 +1,157 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #1e1e2e;
+  --panel: #27293d;
+  --panel-2: #313347;
+  --border: #3a3d57;
+  --text: #d7d8e0;
+  --muted: #8a8ca3;
+  --accent: #6c8cff;
+  --ok: #4ec98a;
+  --err: #ff6b6b;
+  --warn: #ffcc66;
+}
+
+html, body {
+  height: 100%;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.logo { font-weight: 600; }
+.actions button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  margin-left: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.actions button:hover:not(:disabled) { border-color: var(--accent); }
+.actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+#btn-run { color: var(--ok); }
+#btn-stop { color: var(--err); }
+
+/* ---------- 三栏布局 ---------- */
+.layout {
+  display: flex;
+  height: calc(100% - 40px);
+}
+.explorer {
+  width: 220px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.inspector {
+  width: 200px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+.explorer-head, .inspector-head, .console-head {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.explorer-head button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 1px 7px;
+}
+.tree { list-style: none; overflow: auto; flex: 1; padding: 4px 0; }
+.tree li {
+  padding: 4px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree li:hover { background: var(--panel-2); }
+.tree li.file.active { background: var(--panel-2); color: var(--accent); }
+
+.inspector-body { padding: 10px; line-height: 1.7; }
+.inspector-body .muted { color: var(--muted); }
+.muted { color: var(--muted); }
+
+/* ---------- 编辑器区 ---------- */
+.editor-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tabs {
+  height: 32px;
+  display: flex;
+  align-items: stretch;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.tab {
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tab.active { background: var(--bg); color: var(--text); }
+.editor-host { flex: 1; min-height: 0; }
+.CodeMirror {
+  height: 100%;
+  font-size: 13px;
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+.console {
+  height: 200px;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: #16161f;
+}
+.log {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.log .line.out { color: var(--text); }
+.log .line.err { color: var(--err); }
+.log .line.ok { color: var(--ok); }

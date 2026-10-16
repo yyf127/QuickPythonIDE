@@ -3,28 +3,22 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kvstore-cli"
+name = "quick-python-ide"
 version = "0.1.0"
-description = "A small JSON-backed key-value store CLI written in Python."
+description = "A minimal Python IDE built on pywebview (UI external to the executable)."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "yang" }]
-keywords = ["cli", "kvstore", "json"]
-dependencies = []
+keywords = ["ide", "python", "pywebview", "editor"]
+dependencies = ["pywebview>=5.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
 
-[project.scripts]
-kvstore = "kvstore.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

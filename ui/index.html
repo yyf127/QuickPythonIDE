@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuickPythonIDE</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <span class="logo">🐍 QuickPythonIDE</span>
+    <div class="actions">
+      <button id="btn-new" title="提示">新建</button>
+      <button id="btn-save" title="Ctrl+S">保存</button>
+      <button id="btn-run" title="运行当前文件">▶ 运行</button>
+      <button id="btn-stop" disabled title="阶段3支持">■ 停止</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="explorer">
+      <div class="explorer-head">
+        <span>资源管理器</span>
+        <button id="btn-up" title="上一级">↑</button>
+      </div>
+      <ul id="file-tree" class="tree"></ul>
+    </aside>
+
+    <section class="editor-pane">
+      <div id="tabs" class="tabs"></div>
+      <div class="editor-host">
+        <textarea id="code"></textarea>
+      </div>
+      <div class="console">
+        <div class="console-head">运行日志</div>
+        <pre id="log" class="log"></pre>
+      </div>
+    </section>
+
+    <aside class="inspector">
+      <div class="inspector-head">属性</div>
+      <div id="inspector-body" class="inspector-body">
+        <p class="muted">未打开文件</p>
+      </div>
+    </aside>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
