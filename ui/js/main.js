@@ -1,14 +1,25 @@
-/* QuickPythonIDE 前端逻辑（阶段1）
- * 通过 window.pywebview.api 调用宿主的 RPC 接口：
- *   list_dir(path) / load_file(path) / save_file(path, content) / run_code(code, path)
+/* QuickPythonIDE 前端逻辑（阶段2）
+ * 通过 window.pywebview.api 调用宿主 RPC：
+ *   list_dir(path) / load_file(path) / save_file(path, content) /
+ *   run_code(code, path) / delete_path(path)
+ *
+ * 阶段2 新增：工程树展开/折叠 + 右键菜单、多标签关闭、代码/窗体设计视图切换。
  */
 (function () {
   "use strict";
 
   let editor = null;
   let activePath = null;
-  let lastParent = null;
+  let rootPath = null;
   const openTabs = new Map(); // path -> { name, content, dirty }
+
+  // 窗体设计器状态
+  const formControls = [];
+  let ctrlId = 0;
+
+  // 右键菜单上下文
+  let ctxPath = null;
+  let ctxIsDir = false;
 
   function api() {
     return window.pywebview.api;
@@ -19,7 +30,8 @@
     const log = document.getElementById("log");
     const span = document.createElement("span");
     span.className = "line " + (kind || "out");
-    span.textContent = text + "\n";
+    const ts = new Date().toLocaleTimeString();
+    span.textContent = "[" + ts + "] " + text + "\n";
     log.appendChild(span);
     log.scrollTop = log.scrollHeight;
   }
@@ -27,30 +39,149 @@
     document.getElementById("log").innerHTML = "";
   }
 
-  // ---------------- 工程树 ----------------
-  async function renderTree(path) {
+  // ---------------- 工程树（递归展开/折叠） ----------------
+  function makeNode(item) {
+    const li = document.createElement("li");
+    li.className = "node " + (item.is_dir ? "dir" : "file");
+    li.dataset.path = item.path;
+
+    const twisty = document.createElement("span");
+    twisty.className = "twisty";
+    twisty.textContent = item.is_dir ? "▸" : "";
+    li.appendChild(twisty);
+    li.appendChild(document.createTextNode((item.is_dir ? "📁 " : "📄 ") + item.name));
+
+    if (item.is_dir) {
+      li.onclick = function (e) {
+        e.stopPropagation();
+        expandDir(li);
+      };
+    } else {
+      li.onclick = function (e) {
+        e.stopPropagation();
+        openFile(item.path);
+      };
+    }
+    li.oncontextmenu = function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      openCtxForNode(e, item);
+    };
+    return li;
+  }
+
+  async function expandDir(li) {
+    const path = li.dataset.path;
+    const twisty = li.querySelector(":scope > .twisty");
+    let childUl = li.querySelector(":scope > .children");
+    if (!childUl) {
+      childUl = document.createElement("ul");
+      childUl.className = "children";
+      li.appendChild(childUl);
+    }
+    if (li.dataset.loaded === "1") {
+      childUl.classList.toggle("collapsed");
+      if (twisty) twisty.textContent = childUl.classList.contains("collapsed") ? "▸" : "▾";
+      return;
+    }
     const res = await api().list_dir(path);
-    const tree = document.getElementById("file-tree");
-    tree.innerHTML = "";
     if (!res.ok) {
       logLine("读取目录失败: " + res.error, "err");
       return;
     }
-    lastParent = res.parent;
-    res.items.forEach(function (item) {
-      const li = document.createElement("li");
-      li.className = "node " + (item.is_dir ? "dir" : "file");
-      if (item.path === activePath) li.classList.add("active");
-      li.textContent = (item.is_dir ? "📁 " : "📄 ") + item.name;
-      li.onclick = function () {
-        if (item.is_dir) {
-          renderTree(item.path);
-        } else {
-          openFile(item.path);
-        }
-      };
-      tree.appendChild(li);
+    li.dataset.loaded = "1";
+    res.items.forEach(function (it) {
+      childUl.appendChild(makeNode(it));
     });
+    if (twisty) twisty.textContent = "▾";
+  }
+
+  async function renderRoot() {
+    const res = await api().list_dir(null);
+    const tree = document.getElementById("file-tree");
+    tree.innerHTML = "";
+    if (!res.ok) {
+      logLine("读取工程根目录失败: " + res.error, "err");
+      return;
+    }
+    rootPath = res.path;
+    res.items.forEach(function (it) {
+      tree.appendChild(makeNode(it));
+    });
+  }
+
+  // ---------------- 右键菜单 ----------------
+  function showCtx(x, y, items) {
+    const menu = document.getElementById("ctx-menu");
+    menu.innerHTML = "";
+    items.forEach(function (it) {
+      if (it.sep) {
+        const s = document.createElement("div");
+        s.className = "sep";
+        menu.appendChild(s);
+        return;
+      }
+      const el = document.createElement("div");
+      el.className = "item";
+      el.textContent = it.label;
+      el.onclick = function (e) {
+        e.stopPropagation();
+        hideCtx();
+        it.action();
+      };
+      menu.appendChild(el);
+    });
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+    menu.classList.remove("hidden");
+  }
+  function hideCtx() {
+    document.getElementById("ctx-menu").classList.add("hidden");
+  }
+
+  function openCtxForNode(e, item) {
+    ctxPath = item.path;
+    ctxIsDir = item.is_dir;
+    if (item.is_dir) {
+      showCtx(e.clientX, e.clientY, [
+        { label: "新建 .py", action: function () { newFile(".py"); } },
+        { label: "新建 .json", action: function () { newFile(".json"); } },
+        { label: "刷新", action: renderRoot },
+        { sep: true },
+        { label: "删除", action: function () { deleteItem(ctxPath); } },
+      ]);
+    } else {
+      showCtx(e.clientX, e.clientY, [
+        { label: "删除", action: function () { deleteItem(ctxPath); } },
+      ]);
+    }
+  }
+
+  async function newFile(ext) {
+    const name = window.prompt("新建文件名（例如 main" + ext + "）");
+    if (!name) return;
+    const base = ctxIsDir ? ctxPath : rootPath;
+    const full = base.replace(/[\\/]$/, "") + "/" + name;
+    const content = ext === ".py" ? "# " + name + "\n" : "{}\n";
+    const res = await api().save_file(full, content);
+    if (res.ok) {
+      logLine("已新建: " + full, "ok");
+      renderRoot();
+    } else {
+      logLine("新建失败: " + res.error, "err");
+    }
+  }
+
+  async function deleteItem(path) {
+    const label = path.split(/[\\/]/).pop();
+    if (!window.confirm("确认删除 " + label + " ？")) return;
+    const res = await api().delete_path(path);
+    if (res.ok) {
+      logLine("已删除: " + label, "ok");
+      renderRoot();
+    } else {
+      logLine("删除失败: " + res.error, "err");
+    }
   }
 
   // ---------------- 标签管理 ----------------
@@ -60,9 +191,19 @@
     openTabs.forEach(function (tab, path) {
       const el = document.createElement("div");
       el.className = "tab" + (path === activePath ? " active" : "");
-      el.textContent = (tab.dirty ? "• " : "") + tab.name;
-      el.title = path;
-      el.onclick = function () { activateTab(path); };
+      const label = document.createElement("span");
+      label.textContent = (tab.dirty ? "• " : "") + tab.name;
+      label.title = path;
+      label.onclick = function () { activateTab(path); };
+      const close = document.createElement("span");
+      close.className = "close";
+      close.textContent = "×";
+      close.onclick = function (e) {
+        e.stopPropagation();
+        closeTab(path);
+      };
+      el.appendChild(label);
+      el.appendChild(close);
       tabs.appendChild(el);
     });
   }
@@ -83,7 +224,6 @@
     editor.setValue(tab.content);
     editor.clearHistory();
     renderTabs();
-    renderTree(lastParent); // 高亮当前文件
     updateInspector(path, tab);
   }
 
@@ -98,6 +238,25 @@
     editor.clearHistory();
     renderTabs();
     updateInspector(path, tab);
+  }
+
+  function closeTab(path) {
+    const tab = openTabs.get(path);
+    if (tab && tab.dirty) {
+      if (!window.confirm("文件 " + tab.name + " 未保存，确定关闭？")) return;
+    }
+    openTabs.delete(path);
+    if (activePath === path) {
+      const next = openTabs.keys().next();
+      if (!next.done) {
+        activateTab(next.value);
+      } else {
+        activePath = null;
+        editor.setValue("");
+        document.getElementById("inspector-body").innerHTML = '<p class="muted">未打开文件</p>';
+      }
+    }
+    renderTabs();
   }
 
   function updateInspector(path, tab) {
@@ -143,6 +302,82 @@
             res.ok ? "ok" : "err");
   }
 
+  // ---------------- 窗体设计器 ----------------
+  function addControl(type) {
+    const canvas = document.getElementById("form-canvas");
+    const ctrl = document.createElement("div");
+    ctrl.className = "fb-control";
+    const x = 20 + (formControls.length % 6) * 90;
+    const y = 20 + Math.floor(formControls.length / 6) * 50;
+    ctrl.style.left = x + "px";
+    ctrl.style.top = y + "px";
+    const text = type === "Button" ? "按钮" : type === "Label" ? "标签" : "文本框";
+    ctrl.textContent = text;
+    const id = "c" + ++ctrlId;
+    ctrl.dataset.id = id;
+    canvas.appendChild(ctrl);
+    formControls.push({ id: id, type: type, x: x, y: y, text: text });
+    bindControlDrag(ctrl);
+    selectControl(ctrl);
+  }
+
+  function selectControl(ctrl) {
+    document.querySelectorAll(".fb-control").forEach(function (c) {
+      c.classList.remove("selected");
+    });
+    ctrl.classList.add("selected");
+  }
+
+  function bindControlDrag(ctrl) {
+    ctrl.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      selectControl(ctrl);
+      const id = ctrl.dataset.id;
+      const startX = e.clientX, startY = e.clientY;
+      const ox = parseInt(ctrl.style.left, 10), oy = parseInt(ctrl.style.top, 10);
+      function move(ev) {
+        const nx = ox + (ev.clientX - startX);
+        const ny = oy + (ev.clientY - startY);
+        ctrl.style.left = nx + "px";
+        ctrl.style.top = ny + "px";
+        const rec = formControls.find(function (c) { return c.id === id; });
+        if (rec) { rec.x = nx; rec.y = ny; }
+      }
+      function up() {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+      }
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
+  }
+
+  async function exportForm() {
+    if (!rootPath) { logLine("工程根目录未知", "err"); return; }
+    const data = { version: 1, controls: formControls };
+    const path = rootPath.replace(/[\\/]$/, "") + "/form.ui.json";
+    const res = await api().save_file(path, JSON.stringify(data, null, 2));
+    if (res.ok) {
+      logLine("已导出窗体布局: " + path + "（" + formControls.length + " 个控件）", "ok");
+    } else {
+      logLine("导出失败: " + res.error, "err");
+    }
+  }
+
+  // ---------------- 视图切换 ----------------
+  function switchView(view) {
+    const wrap = editor.getWrapperElement();
+    const designer = document.getElementById("designer");
+    if (view === "design") {
+      wrap.classList.add("hidden");
+      designer.classList.remove("hidden");
+    } else {
+      designer.classList.add("hidden");
+      wrap.classList.remove("hidden");
+      editor.refresh();
+    }
+  }
+
   // ---------------- 初始化 ----------------
   function initEditor() {
     editor = CodeMirror.fromTextArea(document.getElementById("code"), {
@@ -163,25 +398,65 @@
 
   function init() {
     initEditor();
+
     document.getElementById("btn-run").onclick = runActive;
     document.getElementById("btn-save").onclick = saveActive;
     document.getElementById("btn-new").onclick = function () {
-      logLine("新建文件：在文件管理器建好空文件后，刷新树即可在此打开", "ok");
+      ctxPath = rootPath; ctxIsDir = true; newFile(".py");
     };
     document.getElementById("btn-stop").onclick = function () {
       logLine("停止功能将在阶段3通过 subprocess 子进程实现", "err");
     };
     document.getElementById("btn-up").onclick = function () {
-      if (lastParent) renderTree(lastParent);
+      // 阶段2 用展开/折叠代替导航，这里刷新根目录
+      renderRoot();
     };
+
+    // 工程树空白区域右键
+    const tree = document.getElementById("file-tree");
+    tree.oncontextmenu = function (e) {
+      e.preventDefault();
+      ctxPath = rootPath; ctxIsDir = true;
+      showCtx(e.clientX, e.clientY, [
+        { label: "新建 .py", action: function () { newFile(".py"); } },
+        { label: "新建 .json", action: function () { newFile(".json"); } },
+        { label: "刷新", action: renderRoot },
+      ]);
+    };
+
+    // 视图切换
+    document.querySelectorAll(".view-btn").forEach(function (b) {
+      b.onclick = function () {
+        document.querySelectorAll(".view-btn").forEach(function (x) {
+          x.classList.remove("active");
+        });
+        b.classList.add("active");
+        switchView(b.dataset.view);
+      };
+    });
+
+    // 窗体设计器面板
+    document.querySelectorAll(".palette button[data-type]").forEach(function (b) {
+      b.onclick = function () { addControl(b.dataset.type); };
+    });
+    document.getElementById("btn-export-form").onclick = exportForm;
+
+    // 全局：点击/滚动关闭右键菜单
+    document.addEventListener("click", hideCtx);
+    document.addEventListener("contextmenu", function (e) {
+      if (e.target.id !== "file-tree" && !e.target.closest(".node")) hideCtx();
+    });
+
+    // 快捷键
     document.addEventListener("keydown", function (e) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        saveActive();
+        e.preventDefault(); saveActive();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r") {
+        e.preventDefault(); runActive();
       }
     });
-    // 从宿主根目录（main.py 所在目录）开始展示工程树
-    renderTree(null);
+
+    renderRoot();
   }
 
   if (window.pywebview) {
