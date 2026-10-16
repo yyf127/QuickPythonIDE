@@ -1,4 +1,4 @@
-"""QuickPythonIDE —— 基于 pywebview 的简易 Python IDE（阶段1：基础骨架）。
+"""QuickPythonIDE —— 基于 pywebview 的简易 Python IDE（阶段3：扩展宿主能力）。
 
 架构
 ----
@@ -7,24 +7,35 @@
   因为 UI 在可执行文件之外，改界面/加编辑器功能都**不用重新打包 exe**
   （详见项目计划文档）。
 
-阶段1 能力范围
---------------
-- RPC 接口：list_dir / load_file / save_file / run_code（exec 原型）。
-- run_code 目前用 ``exec`` 在主线程执行（会阻塞到结束）。
-  阶段3 会改为 subprocess 子进程，以支持隔离与「停止运行」。
+阶段3 能力范围（相比阶段2）
+--------------------------
+- ``run_code`` 改为 **subprocess 子进程** 执行用户代码（阶段1 是 exec 主线程阻塞）。
+  * 子进程隔离：用户代码死循环 / 崩溃不会影响 IDE 窗口。
+  * 流式输出：stdout/stderr 实时通过 pywebview 推回前端日志面板。
+  * 支持 ``stop_code`` 终止正在运行的子进程。
+- 新增 RPC：
+  * ``python_versions()``：列出本机可用的 Python 解释器（供版本切换）。
+  * ``pip_install(packages, python)``：调用对应解释器的 pip 安装依赖。
+  * ``backup_file(path)``：把文件复制成 ``.bak`` 备份。
 
-阶段2 补充说明
---------------
-- 前端（ui/）新增：工程树展开/折叠 + 右键菜单、多标签关闭、代码/窗体设计视图切换。
-- 宿主仅新增 ``delete_path``（删除文件/目录）；新建文件复用 ``save_file``，无需再改 main.py。
+无 webview 的测试/命令行环境下，``run_code`` 退化为**同步**执行并直接返回捕获到的
+stdout/stderr，保证单测不需要 GUI。
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import json
+import os
+import shlex
 import shutil
+import subprocess
+import sys
+import tempfile
+import threading
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -35,8 +46,11 @@ class Api:
 
     def __init__(self, root: str | None = None) -> None:
         self.root = Path(root) if root else BASE_DIR
+        self._proc: subprocess.Popen | None = None  # 当前运行的用户代码子进程
+        self._tmp: str | None = None               # 临时脚本文件路径
+        self._reader_threads: list[threading.Thread] = []
 
-    # ------------------------------------------------------------------ 磁盘
+    # ================================================================== 磁盘
     def list_dir(self, path: str | None = None) -> dict:
         """列出目录内容，供左侧工程树使用。返回 parent 便于「上一级」。"""
         target = Path(path) if path else self.root
@@ -86,13 +100,268 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
 
-    # -------------------------------------------------------------- 代码执行
-    def run_code(self, code: str, path: str | None = None) -> dict:
-        """执行 ``code`` 并捕获 stdout / stderr。
+    def backup_file(self, path: str) -> dict:
+        """把文件复制成 ``.bak`` 备份（已存在则追加时间戳）。"""
+        try:
+            src = Path(path)
+            if not src.exists():
+                return {"ok": False, "error": f"not found: {path}"}
+            if src.is_dir():
+                return {"ok": False, "error": "暂不支持备份目录"}
+            dst = src.with_suffix(src.suffix + ".bak")
+            if dst.exists():
+                dst = src.with_name(
+                    src.name + "." + datetime.now().strftime("%Y%m%d%H%M%S") + ".bak"
+                )
+            shutil.copy2(src, dst)
+            return {"ok": True, "path": str(dst)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
 
-        注意：阶段1 使用 exec 在宿主线程上执行（会阻塞直到结束）。
-        阶段3 将切换到 subprocess 子进程，支持隔离与终止。
+    # ============================================================ 解释器/依赖
+    def python_versions(self) -> dict:
+        """列出本机可用 Python 解释器，供前端做版本切换下拉框。"""
+        found: list[dict] = []
+        seen: set[str] = set()
+
+        def add(exe: str) -> None:
+            exe = os.path.abspath(exe)
+            if exe in seen:
+                return
+            seen.add(exe)
+            ver = ""
+            try:
+                out = subprocess.run(
+                    [exe, "--version"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                ver = (out.stdout or out.stderr).strip()
+            except Exception:  # noqa: BLE001, S110
+                pass
+            found.append({"path": exe, "label": ver or exe})
+
+        try:
+            add(sys.executable)
+            for d in os.environ.get("PATH", "").split(os.pathsep):
+                for cand in (
+                    "python.exe",
+                    "python3.exe",
+                    "python3.10.exe",
+                    "python3.11.exe",
+                    "python3.12.exe",
+                    "python3.13.exe",
+                ):
+                    p = os.path.join(d, cand)
+                    if os.path.exists(p):
+                        add(p)
+            # Windows py 启动器
+            out = subprocess.run(
+                ["py", "-0"], check=False, capture_output=True, text=True, timeout=5
+            ).stdout
+            import re
+
+            for line in out.splitlines():
+                m = re.search(r"-V:([\d.]+)", line) or re.search(
+                    r"Python\s+([\d.]+)", line
+                )
+                if m:
+                    found.append(
+                        {
+                            "path": "py -" + m.group(1),
+                            "label": "Python " + m.group(1) + " (py launcher)",
+                        }
+                    )
+        except Exception:  # noqa: BLE001, S110 - 扫描失败也不阻塞 IDE
+            pass
+
+        return {"ok": True, "versions": found}
+
+    def pip_install(self, packages: str | list, python: str | None = None) -> dict:
+        """用指定解释器安装依赖（同步阻塞，带超时）。"""
+        if isinstance(packages, str):
+            pkgs = shlex.split(packages)
+        elif isinstance(packages, list):
+            pkgs = packages
+        else:
+            return {"ok": False, "error": "packages 必须是字符串或列表"}
+        if not pkgs:
+            return {"ok": False, "error": "未指定要安装的包"}
+        try:
+            cmd = self._resolve_python(python) + ["-m", "pip", "install"] + pkgs
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                cwd=str(self.root),
+            )
+            out = (proc.stdout or "") + (proc.stderr or "")
+            return {"ok": proc.returncode == 0, "output": out}
+        except subprocess.TimeoutExpired as exc:
+            out = (exc.stdout or "") + (exc.stderr or "") + "\n[pip 安装超时]"
+            return {"ok": False, "output": out}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "output": str(exc)}
+
+    # ============================================================== 代码执行
+    def run_code(self, code: str, path: str | None = None, python: str | None = None) -> dict:
+        """执行 ``code``。
+
+        有 webview 窗口时：启动子进程**异步**运行，stdout/stderr 实时推回前端，
+        返回 ``{ok, async, pid}``（实际输出经 ``window.appendOutput``，结束经
+        ``window.onRunFinished``）。
+        无窗口（测试/CLI）时：同步运行并直接返回 ``{ok, stdout, stderr}``。
         """
+        if self._proc is not None and self._proc.poll() is None:
+            return {"ok": False, "error": "已有代码在运行中，请先停止"}
+
+        if self._has_window():
+            cmd, tmp = self._build_cmd(code, python)
+            self._start_subprocess(cmd, tmp)
+            return {"ok": True, "async": True, "pid": self._proc.pid}
+        return self._run_subprocess(code, python)
+
+    def stop_code(self) -> dict:
+        """终止当前正在运行的用户代码子进程。"""
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return {"ok": False, "error": "当前没有正在运行的代码"}
+        try:
+            proc.kill()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
+
+    # ---------------------------------------------------------- 内部工具
+    def _resolve_python(self, python: str | None) -> list[str]:
+        if not python:
+            return [sys.executable]
+        return shlex.split(python)  # 支持 "py -3.11" 这类带参数的写法
+
+    def _build_cmd(self, code: str, python: str | None) -> tuple[list[str], str]:
+        fd, tmp = tempfile.mkstemp(suffix=".py", prefix="qpython_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(code)
+        cmd = self._resolve_python(python) + ["-u", tmp]  # -u 关闭缓冲，实时输出
+        return cmd, tmp
+
+    def _has_window(self) -> bool:
+        try:
+            import webview
+
+            return bool(webview.windows)
+        except Exception:  # noqa: BLE001 - 没有 webview 即视为无界面
+            return False
+
+    def _push_js(self, js: str) -> None:
+        try:
+            import webview
+
+            if webview.windows:
+                webview.windows[0].evaluate_js(js)
+        except Exception:  # noqa: BLE001, S110 - 推送失败不影响执行
+            pass
+
+    def _push(self, text: str, kind: str) -> None:
+        if not text:
+            return
+        js = f"window.appendOutput({json.dumps(text)}, {json.dumps(kind)});"
+        self._push_js(js)
+
+    def _start_subprocess(self, cmd: list[str], tmp: str) -> None:
+        self._proc = subprocess.Popen(
+            cmd,
+            cwd=str(self.root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            encoding="utf-8",
+        )
+        self._tmp = tmp
+        self._push(f"\n=== 运行 (pid {self._proc.pid}) ===\n", "ok")
+
+        t_out = threading.Thread(
+            target=self._reader, args=(self._proc.stdout, "out"), daemon=True
+        )
+        t_err = threading.Thread(
+            target=self._reader, args=(self._proc.stderr, "err"), daemon=True
+        )
+        t_out.start()
+        t_err.start()
+        self._reader_threads = [t_out, t_err]
+        threading.Thread(
+            target=self._waiter, args=(self._proc,), daemon=True
+        ).start()
+
+    def _reader(self, stream, kind: str) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                if not line:
+                    break
+                self._push(line, kind)
+        except Exception:  # noqa: BLE001, S110 - 管道已关闭等
+            pass
+
+    def _waiter(self, proc: subprocess.Popen) -> None:
+        for t in self._reader_threads:
+            t.join()
+        rc = proc.wait()
+        ok = rc == 0
+        msg = (
+            "--- 运行结束（正常，返回码 %d）---\n"
+            if ok
+            else "--- 运行结束（异常，返回码 %d）---\n"
+        ) % rc
+        self._push(msg, "ok" if ok else "err")
+        self._push_js(
+            "window.onRunFinished({}, {});".format("true" if ok else "false", rc)
+        )
+        if self._tmp:
+            try:
+                os.remove(self._tmp)
+            except OSError:
+                pass
+            self._tmp = None
+        self._proc = None
+
+    def _run_subprocess(self, code: str, python: str | None) -> dict:
+        """无界面时的同步执行（用于单测 / CLI）。"""
+        cmd, tmp = self._build_cmd(code, python)
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=False,
+                cwd=str(self.root),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+            )
+            return {
+                "ok": proc.returncode == 0,
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+            }
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "ok": False,
+                "stdout": exc.stdout or "",
+                "stderr": (exc.stderr or "") + "\n[执行超时]",
+            }
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    # ----------------------------------------------------------------- 兼容
+    def run_code_exec(self, code: str, path: str | None = None) -> dict:
+        """阶段1 遗留的同步 exec 原型（保留以备对比/兼容性测试）。"""
         out, err = io.StringIO(), io.StringIO()
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
