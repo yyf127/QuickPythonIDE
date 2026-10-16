@@ -12,12 +12,18 @@
 - RPC 接口：list_dir / load_file / save_file / run_code（exec 原型）。
 - run_code 目前用 ``exec`` 在主线程执行（会阻塞到结束）。
   阶段3 会改为 subprocess 子进程，以支持隔离与「停止运行」。
+
+阶段2 补充说明
+--------------
+- 前端（ui/）新增：工程树展开/折叠 + 右键菜单、多标签关闭、代码/窗体设计视图切换。
+- 宿主仅新增 ``delete_path``（删除文件/目录）；新建文件复用 ``save_file``，无需再改 main.py。
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import shutil
 import traceback
 from pathlib import Path
 
@@ -63,6 +69,20 @@ class Api:
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text(content, encoding="utf-8")
             return {"ok": True, "path": str(file)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    def delete_path(self, path: str) -> dict:
+        """删除文件或目录（目录递归删除）。供前端工程树右键菜单使用。"""
+        try:
+            target = Path(path)
+            if not target.exists():
+                return {"ok": False, "error": f"not found: {path}"}
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+            return {"ok": True, "path": str(target)}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
 

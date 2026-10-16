@@ -31,6 +31,19 @@ def test_load_missing_file(tmp_path):
     assert res["error"]
 
 
+def test_delete_path(tmp_path):
+    api = Api(str(tmp_path))
+    f = tmp_path / "del.py"
+    f.write_text("x = 1")
+    d = tmp_path / "sub"
+    d.mkdir()
+    (d / "a.txt").write_text("hi")
+    assert api.delete_path(str(f))["ok"] is True
+    assert api.delete_path(str(d))["ok"] is True
+    assert not f.exists() and not d.exists()
+    assert api.delete_path(str(tmp_path / "ghost.py"))["ok"] is False
+
+
 def test_run_code_captures_output():
     api = Api()
     res = api.run_code("print('hello')")
