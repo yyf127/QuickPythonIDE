@@ -1,4 +1,4 @@
-"""QuickPythonIDE —— 基于 pywebview 的简易 Python IDE（阶段3：扩展宿主能力）。
+"""QuickPythonIDE —— 基于 pywebview 的简易 Python IDE（已完成阶段1-4：骨架 / UI / 宿主能力 / 打包）。
 
 架构
 ----
@@ -38,14 +38,28 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+
+def _app_root() -> Path:
+    """项目根目录（ui/ 的父目录）。
+
+    - 开发模式（直接 ``python main.py``）：指向 main.py 所在目录。
+    - 打包成 exe 后（``sys.frozen``）：指向 main.exe 同级目录。
+      ui/ 文件夹与 exe 放在一起，因此无论哪种环境都能正确定位外置界面。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+APP_ROOT = _app_root()
+UI_DIR = APP_ROOT / "ui"
 
 
 class Api:
     """暴露给前端 JavaScript 的 RPC 接口（通过 pywebview 桥接）。"""
 
     def __init__(self, root: str | None = None) -> None:
-        self.root = Path(root) if root else BASE_DIR
+        self.root = Path(root) if root else APP_ROOT
         self._proc: subprocess.Popen | None = None  # 当前运行的用户代码子进程
         self._tmp: str | None = None               # 临时脚本文件路径
         self._reader_threads: list[threading.Thread] = []
@@ -383,7 +397,7 @@ def main() -> None:
     api = Api()
     webview.create_window(
         "QuickPythonIDE",
-        str(BASE_DIR / "ui" / "index.html"),
+        str(UI_DIR / "index.html"),
         js_api=api,
         width=1100,
         height=720,
