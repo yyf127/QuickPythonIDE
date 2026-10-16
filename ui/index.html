@@ -11,10 +11,16 @@
   <header class="topbar">
     <span class="logo">🐍 QuickPythonIDE</span>
     <div class="actions">
+      <select id="py-version" title="选择运行/安装所用的 Python 解释器"></select>
       <button id="btn-new" title="在根目录新建文件">新建</button>
       <button id="btn-save" title="Ctrl+S">保存</button>
       <button id="btn-run" title="Ctrl+R 运行当前文件">▶ 运行</button>
-      <button id="btn-stop" disabled title="阶段3支持">■ 停止</button>
+      <button id="btn-stop" disabled title="停止正在运行的代码">■ 停止</button>
+      <span class="pip-group">
+        <input id="pip-pkg" class="pip-input" placeholder="包名，如 requests" />
+        <button id="btn-pip" title="pip install">pip 安装</button>
+      </span>
+      <button id="btn-backup" title="备份当前文件为 .bak">备份</button>
     </div>
   </header>
 
