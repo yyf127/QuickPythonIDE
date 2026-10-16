@@ -97,3 +97,30 @@ def test_backup_file(tmp_path):
     assert res["ok"] is True
     assert Path(res["path"]).exists()
     assert Path(res["path"]).read_text(encoding="utf-8") == "data"
+
+
+def test_resolve_python_path_with_spaces():
+    # 含空格的解释器路径（如嵌入解释器目录）应原样返回，不被 shlex 拆开
+    import tempfile
+
+    p = tempfile.mkdtemp() + "/my python.exe"
+    open(p, "w").close()
+    assert Api()._resolve_python(p) == [p]
+
+
+def test_resolve_python_py_launcher():
+    # "py -3.11" 这类带参数的写法仍应被拆分
+    assert Api()._resolve_python("py -3.11") == ["py", "-3.11"]
+
+
+def test_default_root_falls_back_without_project():
+    # 仓库里没有 project/ 时应回退到 APP_ROOT（部署包有 project/ 时才用它）
+    import main
+
+    assert Api().root == main.APP_ROOT
+
+
+def test_python_versions_has_embedded_field():
+    res = Api().python_versions()
+    assert res["ok"] is True
+    assert all({"path", "label", "embedded"} <= set(v.keys()) for v in res["versions"])
