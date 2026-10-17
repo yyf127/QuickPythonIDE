@@ -391,17 +391,18 @@ class Api:
             return {"ok": False, "error": "版本号格式应为 X.Y.Z，例如 3.11.9"}
         version = m.group(0)
         root_dir = Path(dest) if dest else (APP_ROOT / "root")
-        target = root_dir / "python-{}-embed-amd64".format(version)
+        target = root_dir / f"python-{version}-embed-amd64"
         if target.exists():
-            return {"ok": False, "error": "已存在：{}，无需重复下载".format(target)}
+            return {"ok": False, "error": f"已存在：{target}，无需重复下载"}
         steps: list[str] = []
-        base = "python-{}-embed-amd64.zip".format(version)
+        base = f"python-{version}-embed-amd64.zip"
         urls = [
-            "https://www.python.org/ftp/python/{}/{}".format(version, base),
-            "https://registry.npmmirror.com/-/binary/python/{}/{}".format(version, base),
-            "https://repo.huaweicloud.com/python/{}/{}".format(version, base),
+            f"https://www.python.org/ftp/python/{version}/{base}",
+            f"https://registry.npmmirror.com/-/binary/python/{version}/{base}",
+            f"https://repo.huaweicloud.com/python/{version}/{base}",
         ]
-        tmp_zip = tempfile.NamedTemporaryFile(suffix=".zip", delete=False, prefix="pydl_").name
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False, prefix="pydl_") as _f:
+            tmp_zip = _f.name
         try:
             ok_dl = False
             last_err = ""
@@ -429,7 +430,7 @@ class Api:
                 zf.extractall(target)
             try:
                 os.unlink(tmp_zip)
-            except OSError:  # noqa: BLE001
+            except OSError:
                 pass
 
             exe = str(target / "python.exe")
@@ -612,11 +613,8 @@ class Api:
                 [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
                 check=False, capture_output=True, text=True, timeout=30, env=env,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             chk = None
-            chk_err = str(exc)
-        else:
-            chk_err = (chk.stderr or "")[:400] if chk.returncode else ""
         if chk is not None and chk.returncode == 0:
             return {"ok": True, "action": "tkinter 已可用"}
         target = self._py_version(exe)
@@ -645,7 +643,7 @@ class Api:
                 "dest": str(Path(exe).resolve().parent),
             }
         if chk2.returncode == 0:
-            return {"ok": True, "action": "已从 {} 复制 Tcl/Tk，tkinter 现已可用".format(src)}
+            return {"ok": True, "action": f"已从 {src} 复制 Tcl/Tk，tkinter 现已可用"}
         return {
             "ok": False,
             "action": "复制后仍然无法使用 tkinter",
@@ -745,7 +743,7 @@ class Api:
                     [cand, "-c", "import tkinter"],
                     check=False, capture_output=True, text=True, timeout=30,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
             if chk.returncode == 0:
                 return cand
@@ -771,7 +769,7 @@ class Api:
                 for f in src.glob(pat):
                     try:
                         _sh.copy2(f, dst / f.name)
-                    except OSError:  # noqa: BLE001
+                    except OSError:
                         pass
             tkd = src / "DLLs" / "_tkinter.pyd"
             if tkd.exists():
@@ -797,7 +795,7 @@ class Api:
                     if added:
                         p.write_text(txt, encoding="utf-8")
                     break
-        except Exception:  # noqa: BLE001 - 复制到一半失败也不致命，交由后续检测判断
+        except Exception:  # noqa: BLE001, S110 - 复制到一半失败也不致命，交由后续检测判断
             pass
 
     @staticmethod
@@ -818,13 +816,13 @@ class Api:
             text = c.get("text", "")
             if ctype == "Button":
                 t = text or "按钮"
-                lines.append('    w = tk.Button(root, text={!r}); w.place(x={}, y={}); _widgets[{!r}] = w'.format(t, x, y, cid))
+                lines.append(f'    w = tk.Button(root, text={t!r}); w.place(x={x}, y={y}); _widgets[{cid!r}] = w')
             elif ctype == "Label":
-                lines.append('    w = tk.Label(root, text={!r}); w.place(x={}, y={}); _widgets[{!r}] = w'.format(text, x, y, cid))
+                lines.append(f'    w = tk.Label(root, text={text!r}); w.place(x={x}, y={y}); _widgets[{cid!r}] = w')
             elif ctype == "TextBox":
-                lines.append('    w = tk.Entry(root, width=24); w.place(x={}, y={}); _widgets[{!r}] = w'.format(x, y, cid))
+                lines.append(f'    w = tk.Entry(root, width=24); w.place(x={x}, y={y}); _widgets[{cid!r}] = w')
             elif ctype == "TextArea":
-                lines.append('    w = tk.Text(root, width=30, height=8); w.place(x={}, y={}); _widgets[{!r}] = w'.format(x, y, cid))
+                lines.append(f'    w = tk.Text(root, width=30, height=8); w.place(x={x}, y={y}); _widgets[{cid!r}] = w')
         controls_code = "\n".join(lines)
         geom = self._form_geometry(controls)
         return (FORM_TK_TEMPLATE
@@ -839,9 +837,9 @@ class Api:
             try:
                 mx = max(mx, int(c.get("x", 0)) + 260)
                 my = max(my, int(c.get("y", 0)) + 80)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
-        return "{}x{}".format(mx, my)
+        return f"{mx}x{my}"
 
     # ---------------------------------------------------------- 内部工具
     def _resolve_python(self, python: str | None) -> list[str]:
@@ -930,7 +928,7 @@ class Api:
                             changed = True
                         else:
                             out.append(ln)
-                    have = set(l.strip() for l in out)
+                    have = {l.strip() for l in out}
                     for extra in ("Lib", "Lib/site-packages"):
                         if extra not in have:
                             out.append(extra)
@@ -1084,7 +1082,7 @@ class Api:
         if self._tmpdir:
             try:
                 shutil.rmtree(self._tmpdir, ignore_errors=True)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             self._tmpdir = None
         self._proc = None

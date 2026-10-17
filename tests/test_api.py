@@ -113,11 +113,11 @@ def test_resolve_python_py_launcher():
     assert Api()._resolve_python("py -3.11") == ["py", "-3.11"]
 
 
-def test_default_root_falls_back_without_project():
-    # 仓库里没有 project/ 时应回退到 APP_ROOT（部署包有 project/ 时才用它）
+def test_default_root_uses_project_when_present():
+    # 仓库里存在 project/ 时，根目录应使用它（部署包约定）
     import main
 
-    assert Api().root == main.APP_ROOT
+    assert Api().root == main.APP_ROOT / "project"
 
 
 def test_python_versions_has_embedded_field():
