@@ -21,6 +21,7 @@
         <button id="btn-pip" title="pip install">pip 安装</button>
       </span>
       <button id="btn-backup" title="备份当前文件为 .bak">备份</button>
+      <button id="btn-theme" title="切换深色/浅色主题">🌙 深色</button>
     </div>
   </header>
 
@@ -58,7 +59,13 @@
       </div>
 
       <div class="console">
-        <div class="console-head">运行日志</div>
+        <div class="console-head">
+          <span>运行日志</span>
+          <span class="console-actions">
+            <button id="btn-clear-log" title="清空日志">清空</button>
+            <button id="btn-export-log" title="导出日志为 txt 文件">导出</button>
+          </span>
+        </div>
         <pre id="log" class="log"></pre>
       </div>
     </section>
@@ -70,6 +77,13 @@
       </div>
     </aside>
   </main>
+
+  <!-- 底部状态栏 -->
+  <footer id="statusbar" class="statusbar">
+    <span id="st-interp">解释器: 默认 Python</span>
+    <span class="st-sep">|</span>
+    <span id="st-file">文件: 无</span>
+  </footer>
 
   <!-- 右键菜单 -->
   <div id="ctx-menu" class="ctx-menu hidden"></div>

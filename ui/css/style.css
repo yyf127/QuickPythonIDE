@@ -24,6 +24,31 @@ html, body {
   color: var(--text);
   font-size: 13px;
 }
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---------- 浅色主题 ---------- */
+[data-theme="light"] {
+  --bg: #ffffff;
+  --panel: #f4f5f7;
+  --panel-2: #e8eaed;
+  --border: #d2d5db;
+  --text: #1e2024;
+  --muted: #6b7280;
+  --accent: #3b6cff;
+  --ok: #2e9e63;
+  --err: #d13b3b;
+  --warn: #b8860b;
+}
+[data-theme="light"] .console { background: #f7f8fa; }
+[data-theme="light"] .form-canvas {
+  background:
+    linear-gradient(45deg, #e9ebef 25%, transparent 25%) -10px 0,
+    linear-gradient(-45deg, #e9ebef 25%, transparent 25%) -10px 0,
+    linear-gradient(45deg, transparent 75%, #e9ebef 75%),
+    linear-gradient(-45deg, transparent 75%, #e9ebef 75%) 0 0,
+    #f0f2f5;
+  background-size: 20px 20px;
+}
 
 /* ---------- 顶栏 ---------- */
 .topbar {
@@ -78,7 +103,8 @@ html, body {
 /* ---------- 三栏布局 ---------- */
 .layout {
   display: flex;
-  height: calc(100% - 40px);
+  flex: 1;
+  min-height: 0;
 }
 .explorer {
   width: 220px;
@@ -188,6 +214,8 @@ html, body {
   height: 100%;
   font-size: 13px;
   font-family: "Cascadia Code", Consolas, monospace;
+  background: var(--bg);
+  color: var(--text);
 }
 
 /* ---------- 窗体设计器 ---------- */
@@ -282,3 +310,34 @@ html, body {
 }
 .ctx-menu .item:hover { background: var(--accent); color: #fff; }
 .ctx-menu .sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+/* ---------- 日志操作按钮 ---------- */
+.console-actions { display: inline-flex; gap: 4px; }
+.console-actions button {
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.console-actions button:hover { color: var(--text); border-color: var(--accent); }
+
+/* ---------- 底部状态栏 ---------- */
+.statusbar {
+  height: 24px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.statusbar .st-sep { opacity: 0.5; }
+#st-file { overflow: hidden; text-overflow: ellipsis; }

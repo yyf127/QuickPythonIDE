@@ -41,6 +41,52 @@
     document.getElementById("log").innerHTML = "";
   }
 
+  // ---------------- 状态栏 ----------------
+  function updateStatus() {
+    const sel = document.getElementById("py-version");
+    const interp = sel && sel.value ? sel.value : "默认 Python";
+    const stI = document.getElementById("st-interp");
+    const stF = document.getElementById("st-file");
+    if (stI) stI.textContent = "解释器: " + interp;
+    if (stF) stF.textContent = "文件: " + (activePath || "无");
+  }
+
+  // ---------------- 主题切换（深色/浅色，记忆到本地） ----------------
+  function applyTheme(theme) {
+    if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+    else document.documentElement.removeAttribute("data-theme");
+    const btn = document.getElementById("btn-theme");
+    if (btn) btn.textContent = theme === "light" ? "☀️ 浅色" : "🌙 深色";
+    try { localStorage.setItem("qpy-theme", theme); } catch (e) {}
+    if (editor) editor.refresh();
+  }
+  function initTheme() {
+    let theme = "dark";
+    try { theme = localStorage.getItem("qpy-theme") || "dark"; } catch (e) {}
+    applyTheme(theme);
+    const btn = document.getElementById("btn-theme");
+    if (btn) btn.onclick = function () {
+      const cur = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+      applyTheme(cur === "light" ? "dark" : "light");
+    };
+  }
+
+  // ---------------- 日志导出 ----------------
+  function exportLog() {
+    const text = document.getElementById("log").textContent;
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    a.href = url;
+    a.download = "quickpythonide-log-" + ts + ".txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    logLine("已导出日志", "ok");
+  }
+
   // ---------------- 工程树（递归展开/折叠） ----------------
   function makeNode(item) {
     const li = document.createElement("li");
@@ -227,6 +273,7 @@
     editor.clearHistory();
     renderTabs();
     updateInspector(path, tab);
+    updateStatus();
   }
 
   function activateTab(path) {
@@ -240,6 +287,7 @@
     editor.clearHistory();
     renderTabs();
     updateInspector(path, tab);
+    updateStatus();
   }
 
   function closeTab(path) {
@@ -341,6 +389,7 @@
       o.textContent = "默认 Python";
       sel.appendChild(o);
     }
+    updateStatus();
   }
 
   async function installPip() {
@@ -456,6 +505,7 @@
   }
 
   function init() {
+    initTheme();
     initEditor();
 
     document.getElementById("btn-run").onclick = runActive;
@@ -463,6 +513,10 @@
     document.getElementById("btn-stop").onclick = stopActive;
     document.getElementById("btn-pip").onclick = installPip;
     document.getElementById("btn-backup").onclick = backupActive;
+    document.getElementById("btn-clear-log").onclick = clearLog;
+    document.getElementById("btn-export-log").onclick = exportLog;
+    const pySel = document.getElementById("py-version");
+    if (pySel) pySel.addEventListener("change", updateStatus);
     document.getElementById("btn-new").onclick = function () {
       ctxPath = rootPath; ctxIsDir = true; newFile(".py");
     };
@@ -517,6 +571,7 @@
 
     renderRoot();
     loadPythonVersions();
+    updateStatus();
   }
 
   if (window.pywebview) {
