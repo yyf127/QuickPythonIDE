@@ -311,6 +311,25 @@
     renderTabs();
   }
 
+  function closeTab(path) {
+    const tab = openTabs.get(path);
+    if (tab && tab.dirty) {
+      if (!window.confirm("文件 " + tab.name + " 未保存，确定关闭？")) return;
+    }
+    openTabs.delete(path);
+    if (activePath === path) {
+      const next = openTabs.keys().next();
+      if (!next.done) {
+        activateTab(next.value);
+      } else {
+        activePath = null;
+        editor.setValue("");
+        document.getElementById("inspector-body").innerHTML = '<p class="muted">未打开文件</p>';
+      }
+    }
+    renderTabs();
+  }
+
   function updateInspector(path, tab) {
     const body = document.getElementById("inspector-body");
     const lines = tab.content.split("\n").length;
