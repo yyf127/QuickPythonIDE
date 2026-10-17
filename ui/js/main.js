@@ -2,7 +2,9 @@
  * 通过 window.pywebview.api 调用宿主 RPC：
  *   list_dir(path) / load_file(path) / save_file(path, content) /
  *   delete_path(path) / backup_file(path) / python_versions() /
- *   run_code(code, path, python) / stop_code() / pip_install(packages, python)
+ *   run_code(code, path, python) / stop_code() / pip_install(packages, python) /
+ *   download_python(version, with_tk) / check_tkinter(python) / ensure_tkinter(python)
+ *   run_form(form_json, code, python)
  *
  * 阶段3 新增：run_code 改为异步子进程执行，输出经 window.appendOutput 实时推回，
  *           结束经 window.onRunFinished；新增停止、Python 版本切换、pip 安装、备份。
@@ -485,6 +487,54 @@
     else logLine(res.error || "备份失败", "err");
   }
 
+  // ---------------- 下载 Python 解释器 ----------------
+  function openDownload() {
+    document.getElementById("dl-overlay").classList.remove("hidden");
+    document.getElementById("dl-log").textContent = "";
+    document.getElementById("dl-version").value = "";
+    document.getElementById("dl-version").focus();
+  }
+  function closeDownload() {
+    document.getElementById("dl-overlay").classList.add("hidden");
+  }
+  function dlAppend(text, cls) {
+    const box = document.getElementById("dl-log");
+    const span = document.createElement("span");
+    if (cls) span.className = cls;
+    span.textContent = text + "\n";
+    box.appendChild(span);
+    box.scrollTop = box.scrollHeight;
+  }
+  async function downloadPython() {
+    const ver = document.getElementById("dl-version").value.trim();
+    if (!ver) { dlAppend("请输入版本号（例如 3.11.9）", "err"); return; }
+    const withTk = document.getElementById("dl-tk").checked;
+    const startBtn = document.getElementById("dl-start");
+    startBtn.disabled = true;
+    dlAppend("开始下载 Python " + ver + (withTk ? "（含 tkinter）" : "") + " ...", "ok");
+    if (!/^\d+\.\d+\.\d+$/.test(ver)) {
+      dlAppend("版本号格式应为 X.Y.Z（如 3.11.9）", "err");
+      startBtn.disabled = false;
+      return;
+    }
+    // 下载在宿主同步完成（含解压/启用pip/补tkinter），期间 UI 显示进行中
+    const res = await api().download_python(ver, withTk);
+    if (res.steps) res.steps.forEach(function (s) { dlAppend(s); });
+    if (!res.ok) {
+      dlAppend("❌ " + (res.error || "下载失败"), "err");
+      startBtn.disabled = false;
+      return;
+    }
+    dlAppend("✅ 下载完成：" + res.path, "ok");
+    if (res.pip) dlAppend("pip: " + res.pip);
+    if (res.tk && res.tk.ok) dlAppend("tkinter: 可用 ✅", "ok");
+    else if (res.tk) dlAppend("tkinter: 未就绪（" + (res.tk.detail || "未知") + "），可用「窗体设计 → 修复 Tk」再试", "err");
+    dlAppend("已刷新解释器列表，可在顶栏「解释器」下拉框选用。", "ok");
+    // 刷新顶栏解释器下拉框，让新下载的解释器立即可选
+    await loadPythonVersions();
+    startBtn.disabled = false;
+  }
+
   // ---------------- 窗体设计器 ----------------
   function addControl(type) {
     const canvas = document.getElementById("form-canvas");
@@ -591,6 +641,12 @@
     document.getElementById("btn-run-form").onclick = runForm;
     document.getElementById("btn-pip").onclick = installPip;
     document.getElementById("btn-backup").onclick = backupActive;
+    document.getElementById("btn-download").onclick = openDownload;
+    document.getElementById("dl-close").onclick = closeDownload;
+    document.getElementById("dl-start").onclick = downloadPython;
+    document.getElementById("dl-overlay").addEventListener("click", function (e) {
+      if (e.target === this) closeDownload();
+    });
     document.getElementById("btn-clear-log").onclick = clearLog;
     document.getElementById("btn-export-log").onclick = exportLog;
     const pySel = document.getElementById("py-version");

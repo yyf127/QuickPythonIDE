@@ -341,3 +341,81 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .statusbar .st-sep { opacity: 0.5; }
 #st-file { overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- 下载 Python 弹窗 ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.dialog {
+  width: 520px;
+  max-width: 92vw;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.dialog-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.dialog-foot {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+.dl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dl-row > span { color: var(--muted); font-size: 12px; }
+.dl-input {
+  flex: 1;
+  min-width: 160px;
+  padding: 6px 8px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+}
+.dl-log {
+  max-height: 200px;
+  overflow: auto;
+  background: #111;
+  color: #9f9;
+  font-size: 12px;
+  padding: 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.icon-btn:hover { color: var(--text); }
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 7px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button.primary:disabled { opacity: 0.6; cursor: default; }
+.dl-log .err { color: #f88; }
+.dl-log .ok { color: #8f8; }

@@ -23,6 +23,7 @@
       </span>
       <button id="btn-backup" title="备份当前文件为 .bak">备份</button>
       <button id="btn-theme" title="切换深色/浅色主题">🌙 深色</button>
+      <button id="btn-download" title="下载并解压一个 Python 版本到 root/（免安装）">⬇ 下载Python</button>
     </div>
   </header>
 
@@ -92,6 +93,32 @@
 
   <!-- 右键菜单 -->
   <div id="ctx-menu" class="ctx-menu hidden"></div>
+
+  <!-- 下载 Python 面板 -->
+  <div id="dl-overlay" class="overlay hidden">
+    <div class="dialog">
+      <div class="dialog-head">
+        <span>下载 Python 解释器</span>
+        <button id="dl-close" class="icon-btn" title="关闭">✕</button>
+      </div>
+      <div class="dialog-body">
+        <p class="muted">把指定版本的 Windows 嵌入版 Python 下载到 <code>root/</code> 目录（免安装、不依赖系统 Python）。下载完成后即可在顶栏「解释器」下拉框中选用。</p>
+        <label class="dl-row">
+          <span>版本号</span>
+          <input id="dl-version" class="dl-input" placeholder="例如 3.11.9" />
+          <span class="muted">格式 X.Y.Z</span>
+        </label>
+        <label class="dl-row">
+          <input id="dl-tk" type="checkbox" checked />
+          <span>同时补齐 tkinter（含 Tcl/Tk，用于窗体设计；优先本地同版本，否则在线安装）</span>
+        </label>
+        <div id="dl-log" class="dl-log"></div>
+      </div>
+      <div class="dialog-foot">
+        <button id="dl-start" class="primary">开始下载</button>
+      </div>
+    </div>
+  </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>

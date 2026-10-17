@@ -43,6 +43,8 @@ import sys
 import tempfile
 import threading
 import traceback
+import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -66,8 +68,27 @@ UI_DIR = APP_ROOT / "ui"
 # 用 tkinter 渲染窗体（标准库、原生 GUI，大多数人习惯），按钮点击经 ui.on(id, fn) 回传到
 # 用户代码；ui.get/ui.set 读写控件内容。tkinter 是标准库但需 Tcl/Tk 运行文件，嵌入式
 # 解释器（官方 embed zip）默认不含，缺失时由 _ensure_tkinter 尝试自动补齐。
-FORM_TK_TEMPLATE = '''import tkinter as tk
+FORM_TK_TEMPLATE = '''import os
+import sys
 import traceback
+
+# 让 tkinter 能找到 Tcl/Tk 运行库：嵌入版 / pip 安装的 tkinter-embed 可能不在 Tcl 默认
+# 搜索路径（例如库在 Lib/site-packages/tcl 下），需显式设置 TCL_LIBRARY / TK_LIBRARY。
+_exe_dir = os.path.dirname(sys.executable) or "."
+for _c in (os.path.join(_exe_dir, "tcl", "tcl8.6"),
+           os.path.join(_exe_dir, "Lib", "site-packages", "tcl", "tcl8.6"),
+           os.path.join(_exe_dir, "tcl8.6")):
+    if os.path.isfile(os.path.join(_c, "init.tcl")):
+        os.environ["TCL_LIBRARY"] = _c
+        break
+for _c in (os.path.join(_exe_dir, "tcl", "tk8.6"),
+           os.path.join(_exe_dir, "Lib", "site-packages", "tcl", "tk8.6"),
+           os.path.join(_exe_dir, "tk8.6")):
+    if os.path.isdir(_c):
+        os.environ["TK_LIBRARY"] = _c
+        break
+
+import tkinter as tk
 
 root = tk.Tk()
 root.title("QuickPythonIDE 窗体")
@@ -348,6 +369,106 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "output": str(exc)}
 
+    def download_python(self, version: str, with_tk: bool = True, dest: str | None = None) -> dict:
+        """从 python.org 下载指定版本的 Windows embeddable Python 到 root/ 并解压，
+        自动启用 pip、按需补齐 tkinter（Tcl/Tk）。下载完成后该解释器即可在版本下拉框中选用。
+
+        流程：
+        1. 校验版本号 X.Y.Z；
+        2. 从官方 / 国内镜像下载 embeddable zip（含断点容错的多源回退）；
+        3. 解压到 root/python-<版本>-embed-amd64；
+        4. 修正 ._pth 启用 import site，并通过 ensurepip/get-pip.py 启用 pip；
+        5. 若 with_tk：先尝试本地同版本完整 Python 复制 Tcl/Tk；失败则在线 pip install
+           tkinter-embed（该包自带 _tkinter.pyd + Tcl/Tk 运行文件，支持 3.8–3.13）；
+        6. 最终验证 import tkinter 并返回状态。
+
+        dest 可指定根目录（测试用）；默认 APP_ROOT/root。
+        """
+        import re
+
+        m = re.fullmatch(r"\d+\.\d+\.\d+", (version or "").strip())
+        if not m:
+            return {"ok": False, "error": "版本号格式应为 X.Y.Z，例如 3.11.9"}
+        version = m.group(0)
+        root_dir = Path(dest) if dest else (APP_ROOT / "root")
+        target = root_dir / "python-{}-embed-amd64".format(version)
+        if target.exists():
+            return {"ok": False, "error": "已存在：{}，无需重复下载".format(target)}
+        steps: list[str] = []
+        base = "python-{}-embed-amd64.zip".format(version)
+        urls = [
+            "https://www.python.org/ftp/python/{}/{}".format(version, base),
+            "https://registry.npmmirror.com/-/binary/python/{}/{}".format(version, base),
+            "https://repo.huaweicloud.com/python/{}/{}".format(version, base),
+        ]
+        tmp_zip = tempfile.NamedTemporaryFile(suffix=".zip", delete=False, prefix="pydl_").name
+        try:
+            ok_dl = False
+            last_err = ""
+            for u in urls:
+                try:
+                    steps.append("下载：" + u)
+                    req = urllib.request.Request(u, headers={"User-Agent": "QuickPythonIDE"})
+                    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_zip, "wb") as f:
+                        while True:
+                            chunk = resp.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                    ok_dl = True
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_err = str(exc)
+                    continue
+            if not ok_dl:
+                return {"ok": False, "error": "下载失败：" + last_err, "steps": steps}
+
+            steps.append("解压到 " + str(target))
+            target.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(tmp_zip) as zf:
+                zf.extractall(target)
+            try:
+                os.unlink(tmp_zip)
+            except OSError:  # noqa: BLE001
+                pass
+
+            exe = str(target / "python.exe")
+            self._fix_embedded_pth(exe)
+            steps.append("启用 pip（ensurepip / get-pip.py）")
+            prep = self._ready_pip(exe)
+            steps.append("pip: " + (prep.get("output") or ""))
+            if not prep["ok"]:
+                return {
+                    "ok": False,
+                    "error": "下载完成但无法启用 pip：" + (prep.get("output") or ""),
+                    "path": exe,
+                    "steps": steps,
+                }
+
+            tk_result: dict = {"ok": False, "skipped": not with_tk}
+            if with_tk:
+                steps.append("补齐 tkinter（优先本地同版本，其次在线 tkinter-embed）")
+                tk_result = self._ensure_tkinter(exe)
+                if not tk_result.get("ok"):
+                    steps.append("本地无同版本完整 Python，尝试在线 pip install tkinter-embed ...")
+                    tk_result = self._ensure_tkinter_online(exe)
+                steps.append("tkinter: " + (tk_result.get("action") or tk_result.get("error") or ""))
+
+            final_tk = self.check_tkinter(exe)
+            return {
+                "ok": True,
+                "version": version,
+                "path": exe,
+                "pip": prep.get("output"),
+                "tk": {
+                    "ok": final_tk["ok"],
+                    "detail": (final_tk.get("error") or "") if not final_tk["ok"] else "",
+                },
+                "steps": steps,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "steps": steps}
+
     # ============================================================== 代码执行
     def run_code(self, code: str, path: str | None = None, python: str | None = None) -> dict:
         """执行 ``code``。
@@ -361,8 +482,8 @@ class Api:
             return {"ok": False, "error": "已有代码在运行中，请先停止"}
 
         if self._has_window():
-            cmd, tmp = self._build_cmd(code, python)
-            self._start_subprocess(cmd, tmp)
+            cmd, tmp, env = self._build_cmd(code, python)
+            self._start_subprocess(cmd, tmp, env)
             return {"ok": True, "async": True, "pid": self._proc.pid}
         return self._run_subprocess(code, python)
 
@@ -419,15 +540,16 @@ class Api:
                 return {"ok": False, "error": msg}
 
         run_cmd = cmd + ["-u", str(app_path)]
+        env = {**os.environ, **self._tk_env(cmd[0])}
         if self._has_window():
             self._tmpdir = tmpdir
-            self._start_subprocess(run_cmd, str(app_path))
+            self._start_subprocess(run_cmd, str(app_path), env)
             return {"ok": True, "async": True, "pid": self._proc.pid}
         # 无界面（测试/CI）：仅做语法/导入自检，窗口无法显示
         try:
             proc = subprocess.run(
                 run_cmd, check=False, cwd=str(self.root),
-                capture_output=True, text=True, encoding="utf-8", timeout=30,
+                capture_output=True, text=True, encoding="utf-8", timeout=30, env=env,
             )
             return {"ok": proc.returncode == 0, "stdout": proc.stdout, "stderr": proc.stderr}
         except subprocess.TimeoutExpired as exc:
@@ -462,10 +584,11 @@ class Api:
         无效；这里直接尝试真实导入。withdraw 避免检测时弹出窗口。
         """
         exe = self._resolve_python(python)[0]
+        env = {**os.environ, **self._tk_env(exe)}
         try:
             chk = subprocess.run(
                 [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
-                check=False, capture_output=True, text=True, timeout=30,
+                check=False, capture_output=True, text=True, timeout=30, env=env,
             )
         except Exception as exc:  # noqa: BLE001 - 解释器不存在/无法启动都应视为不可用
             return {"ok": False, "error": str(exc), "python": exe}
@@ -483,10 +606,11 @@ class Api:
         return self._ensure_tkinter(exe)
 
     def _ensure_tkinter(self, exe: str) -> dict:
+        env = {**os.environ, **self._tk_env(exe)}
         try:
             chk = subprocess.run(
                 [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
-                check=False, capture_output=True, text=True, timeout=30,
+                check=False, capture_output=True, text=True, timeout=30, env=env,
             )
         except Exception as exc:  # noqa: BLE001
             chk = None
@@ -509,7 +633,7 @@ class Api:
         try:
             chk2 = subprocess.run(
                 [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
-                check=False, capture_output=True, text=True, timeout=30,
+                check=False, capture_output=True, text=True, timeout=30, env=env,
             )
         except Exception as exc:  # noqa: BLE001
             return {
@@ -529,6 +653,41 @@ class Api:
             "detail": (chk2.stderr or "")[:400],
             "target": target,
             "dest": str(Path(exe).resolve().parent),
+        }
+
+    def _ensure_tkinter_online(self, exe: str) -> dict:
+        """在线兜底：用 pip 安装 tkinter-embed（自带 _tkinter.pyd + Tcl/Tk 运行文件）。
+
+        仅当本地无同版本完整 Python 时由 download_python 调用；安装后验证 import tkinter。
+        """
+        try:
+            res = subprocess.run(
+                [exe, "-m", "pip", "install", "tkinter-embed"],
+                check=False, capture_output=True, text=True, timeout=600,
+                cwd=str(self.root),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "action": "pip install tkinter-embed 失败：" + str(exc)[:300]}
+        if res.returncode != 0:
+            return {
+                "ok": False,
+                "action": "pip install tkinter-embed 失败",
+                "detail": ((res.stderr or res.stdout or "")[:400]),
+            }
+        env = {**os.environ, **self._tk_env(exe)}
+        try:
+            chk = subprocess.run(
+                [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
+                check=False, capture_output=True, text=True, timeout=30, env=env,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "action": "tkinter-embed 已装但导入失败：" + str(exc)[:200]}
+        if chk.returncode == 0:
+            return {"ok": True, "action": "已通过 tkinter-embed 在线补齐 Tcl/Tk，tkinter 可用"}
+        return {
+            "ok": False,
+            "action": "tkinter-embed 已安装但 tkinter 仍不可用（Tcl/Tk 库路径无法定位）",
+            "detail": (chk.stderr or "")[:400],
         }
 
     @staticmethod
@@ -709,6 +868,40 @@ class Api:
                     return str(sub / "python.exe")
         return None
 
+    @staticmethod
+    def _tk_env(python_exe: str) -> dict:
+        """构造运行 tkinter 所需的 TCL_LIBRARY / TK_LIBRARY 环境变量。
+
+        嵌入版 / pip 安装的 tkinter-embed 把 Tcl/Tk 放在非标准路径（如
+        Lib/site-packages/tcl），Tcl 无法自动定位 init.tcl；显式指出即可让
+        import tkinter 正常加载。找不到时返回空 dict（不影响其它解释器）。
+        """
+        exe_dir = os.path.dirname(os.path.abspath(python_exe))
+        tcl = None
+        tk = None
+        for base in (
+            os.path.join(exe_dir, "tcl", "tcl8.6"),
+            os.path.join(exe_dir, "Lib", "site-packages", "tcl", "tcl8.6"),
+            os.path.join(exe_dir, "tcl8.6"),
+        ):
+            if os.path.isfile(os.path.join(base, "init.tcl")):
+                tcl = base
+                break
+        for base in (
+            os.path.join(exe_dir, "tcl", "tk8.6"),
+            os.path.join(exe_dir, "Lib", "site-packages", "tcl", "tk8.6"),
+            os.path.join(exe_dir, "tk8.6"),
+        ):
+            if os.path.isdir(base):
+                tk = base
+                break
+        env = {}
+        if tcl:
+            env["TCL_LIBRARY"] = tcl
+        if tk:
+            env["TK_LIBRARY"] = tk
+        return env
+
     # ----------------------------------------------------- 嵌入解释器准备
     def _fix_embedded_pth(self, python_exe: str) -> None:
         """为 ``root/`` 下的嵌入解释器取消注释 ``import site``（仅对其生效）。
@@ -728,21 +921,31 @@ class Api:
             for name in os.listdir(pdir):
                 if name.endswith("._pth"):
                     p = pdir / name
-                    txt = p.read_text(encoding="utf-8")
-                    if "#import site" in txt:
-                        p.write_text(
-                            txt.replace("#import site", "import site"),
-                            encoding="utf-8",
-                        )
+                    lines = p.read_text(encoding="utf-8").splitlines()
+                    changed = False
+                    out = []
+                    for ln in lines:
+                        if ln.strip() == "#import site":
+                            out.append("import site")
+                            changed = True
+                        else:
+                            out.append(ln)
+                    have = set(l.strip() for l in out)
+                    for extra in ("Lib", "Lib/site-packages"):
+                        if extra not in have:
+                            out.append(extra)
+                            changed = True
+                    if changed:
+                        p.write_text("\n".join(out) + "\n", encoding="utf-8")
                     break
         except Exception:  # noqa: BLE001, S110
             pass
 
     def _ready_pip(self, python_exe: str) -> dict:
-        """确保嵌入解释器可运行 pip：启用 site + 必要时用 ensurepip 安装。
+        """确保嵌入解释器可运行 pip：启用 site + 必要时用 ensurepip / get-pip.py 安装。
 
-        系统 Python 若已自带 pip 则直接返回就绪；none 时才触发 ensurepip
-        （内置 wheel，无需联网）。
+        系统 Python 若已自带 pip 则直接返回就绪；否则先试内置 ensurepip（无需联网），
+        再退化到下载 get-pip.py（需联网一次）。
         """
         python_exe = os.path.abspath(python_exe)
         self._fix_embedded_pth(python_exe)
@@ -764,19 +967,40 @@ class Api:
         )
         if res.returncode == 0:
             return {"ok": True, "output": "已通过 ensurepip 安装 pip"}
+        # 兜底：下载 get-pip.py 引导安装（需联网）
+        try:
+            gp = os.path.join(tempfile.gettempdir(), "get-pip.py")
+            urllib.request.urlretrieve("https://bootstrap.pypa.io/get-pip.py", gp)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "output": "ensurepip 失败且无法下载 get-pip.py："
+                + str(exc)[:200],
+            }
+        res2 = subprocess.run(
+            [python_exe, gp],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=str(self.root),
+        )
+        if res2.returncode == 0:
+            return {"ok": True, "output": "已通过 get-pip.py 安装 pip"}
         return {
             "ok": False,
             "output": "无法为嵌入解释器准备 pip："
-            + ((res.stderr or res.stdout or "")[:300]),
+            + ((res2.stderr or res2.stdout or "")[:300]),
         }
 
-    def _build_cmd(self, code: str, python: str | None) -> tuple[list[str], str]:
+    def _build_cmd(self, code: str, python: str | None) -> tuple[list[str], str, dict]:
         fd, tmp = tempfile.mkstemp(suffix=".py", prefix="qpython_")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(code)
         cmd = self._resolve_python(python) + ["-u", tmp]  # -u 关闭缓冲，实时输出
         self._fix_embedded_pth(cmd[0])  # 嵌入解释器需启用 import site（仅影响 root/ 下）
-        return cmd, tmp
+        env = {**os.environ, **self._tk_env(cmd[0])}
+        return cmd, tmp, env
 
     def _has_window(self) -> bool:
         try:
@@ -801,7 +1025,7 @@ class Api:
         js = f"window.appendOutput({json.dumps(text)}, {json.dumps(kind)});"
         self._push_js(js)
 
-    def _start_subprocess(self, cmd: list[str], tmp: str) -> None:
+    def _start_subprocess(self, cmd: list[str], tmp: str, env: dict | None = None) -> None:
         self._proc = subprocess.Popen(
             cmd,
             cwd=str(self.root),
@@ -810,6 +1034,7 @@ class Api:
             text=True,
             bufsize=1,
             encoding="utf-8",
+            env=env if env is not None else {**os.environ, **self._tk_env(cmd[0])},
         )
         self._tmp = tmp
         self._push(f"\n=== 运行 (pid {self._proc.pid}) ===\n", "ok")
@@ -866,7 +1091,7 @@ class Api:
 
     def _run_subprocess(self, code: str, python: str | None) -> dict:
         """无界面时的同步执行（用于单测 / CLI）。"""
-        cmd, tmp = self._build_cmd(code, python)
+        cmd, tmp, env = self._build_cmd(code, python)
         try:
             proc = subprocess.run(
                 cmd,
@@ -876,6 +1101,7 @@ class Api:
                 text=True,
                 encoding="utf-8",
                 timeout=30,
+                env=env,
             )
             return {
                 "ok": proc.returncode == 0,

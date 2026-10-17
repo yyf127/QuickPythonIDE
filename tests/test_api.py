@@ -161,3 +161,47 @@ def test_run_form_requires_controls():
     res = Api(str(tempfile.mkdtemp())).run_form([], "print(1)")
     assert res["ok"] is False
     assert "控件" in res["error"]
+
+
+def test_tk_env_finds_site_packages_tcl():
+    # tkinter-embed 把 Tcl/Tk 放在 Lib/site-packages/tcl 下，_tk_env 应指向它
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    base = Path(d) / "Lib" / "site-packages" / "tcl"
+    (base / "tcl8.6").mkdir(parents=True)
+    (base / "tcl8.6" / "init.tcl").write_text("# init")
+    (base / "tk8.6").mkdir()
+    env = Api()._tk_env(str(Path(d) / "python.exe"))
+    assert env.get("TCL_LIBRARY") == str(base / "tcl8.6")
+    assert env.get("TK_LIBRARY") == str(base / "tk8.6")
+
+
+def test_tk_env_finds_plain_tcl_dir():
+    # 手动从完整 Python 复制的 tcl/ 目录（root/tcl/tcl8.6）也应被找到
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    base = Path(d) / "tcl"
+    (base / "tcl8.6").mkdir(parents=True)
+    (base / "tcl8.6" / "init.tcl").write_text("# init")
+    (base / "tk8.6").mkdir()
+    env = Api()._tk_env(str(Path(d) / "python.exe"))
+    assert env.get("TCL_LIBRARY") == str(base / "tcl8.6")
+    assert env.get("TK_LIBRARY") == str(base / "tk8.6")
+
+
+def test_download_python_rejects_bad_version():
+    res = Api().download_python("not-a-version")
+    assert res["ok"] is False
+    assert "格式" in res["error"]
+
+
+def test_download_python_rejects_existing_target():
+    import tempfile
+
+    dest = tempfile.mkdtemp()
+    (Path(dest) / "python-3.11.9-embed-amd64").mkdir()
+    res = Api().download_python("3.11.9", dest=dest)
+    assert res["ok"] is False
+    assert "已存在" in res["error"]
