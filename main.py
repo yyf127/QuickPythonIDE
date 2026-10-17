@@ -62,6 +62,76 @@ def _app_root() -> Path:
 APP_ROOT = _app_root()
 UI_DIR = APP_ROOT / "ui"
 
+# 窗体运行：生成的 app.py 模板（__FORM__ / __USER_CODE__ 由宿主替换）。
+# 用 pywebview 渲染窗体，按钮点击经 pywebview.api.handle(id) 回传到用户代码 ui.on(id, fn)。
+FORM_APP_TEMPLATE = """import webview
+
+FORM = __FORM__
+
+_user_handlers = {}
+_window = None
+
+class _UI:
+    @staticmethod
+    def on(control_id, fn):
+        _user_handlers[control_id] = fn
+    @staticmethod
+    def get(control_id):
+        if _window is None:
+            return ""
+        return _window.evaluate_js("__val(" + repr(control_id) + ")") or ""
+    @staticmethod
+    def set(control_id, value):
+        if _window is not None:
+            _window.evaluate_js("__set(" + repr(control_id) + ", " + repr(str(value)) + ")")
+
+ui = _UI()
+
+__USER_CODE__
+
+class _Controller:
+    def handle(self, control_id):
+        fn = _user_handlers.get(control_id)
+        if fn:
+            try:
+                fn()
+            except Exception as e:
+                if _window is not None:
+                    _window.evaluate_js("__log(" + repr(str(e)) + ")")
+
+def main():
+    global _window
+    _window = webview.create_window("QuickPythonIDE - 窗体", "form.html", js_api=_Controller())
+    webview.start()
+
+if __name__ == "__main__":
+    main()
+"""
+
+# 窗体运行：生成的 form.html 模板（__BODY__ 由宿主替换成控件）。
+FORM_HTML_TEMPLATE = """<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:#f3f3f3;margin:0;min-height:100vh;}
+  button{padding:6px 14px;cursor:pointer;}
+  input{padding:4px;}
+  #__log{position:absolute;left:8px;right:8px;bottom:8px;height:70px;overflow:auto;background:#222;color:#9f9;font-size:12px;padding:4px;white-space:pre-wrap;}
+</style></head>
+<body>
+__BODY__
+<script>
+function __set(id,v){var el=document.getElementById(id);if(!el)return;if('value'in el)el.value=v;else el.textContent=v;}
+function __val(id){var el=document.getElementById(id);if(!el)return '';return ('value'in el)?el.value:el.textContent;}
+function __log(s){var c=document.getElementById('__log');if(c)c.textContent+=(s==null?'':s)+'\\n';}
+document.addEventListener('pywebviewready',function(){
+  document.querySelectorAll('[data-onclick]').forEach(function(b){
+    b.onclick=function(){if(window.pywebview)pywebview.api.handle(b.id);};
+  });
+});
+</script>
+<pre id="__log"></pre>
+</body></html>
+"""
+
 
 class Api:
     """暴露给前端 JavaScript 的 RPC 接口（通过 pywebview 桥接）。"""
@@ -76,6 +146,7 @@ class Api:
             self.root = APP_ROOT
         self._proc: subprocess.Popen | None = None  # 当前运行的用户代码子进程
         self._tmp: str | None = None               # 临时脚本文件路径
+        self._tmpdir: str | None = None            # 窗体运行时的临时目录
         self._reader_threads: list[threading.Thread] = []
 
     # ================================================================== 磁盘
@@ -185,7 +256,10 @@ class Api:
             )
 
         try:
-            add(sys.executable)
+            # 冻结成 exe 后，sys.executable 是 IDE 自身，无法用来跑用户脚本
+            # （会重新打开 IDE），因此不把它列为可运行解释器；运行时默认用 root/ 嵌入式解释器。
+            if not getattr(sys, "frozen", False):
+                add(sys.executable)
             for d in os.environ.get("PATH", "").split(os.pathsep):
                 for cand in (
                     "python.exe",
@@ -293,6 +367,100 @@ class Api:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
+
+    # ============================================================== 窗体运行
+    def run_form(self, form_json: str | list, code: str, python: str | None = None) -> dict:
+        """把「窗体设计」生成的控件 + 用户写的控制器代码，跑成一个真实窗口。
+
+        生成自包含的 app.py（内嵌 pywebview 桥）+ form.html，用选中的解释器
+        （默认 root/ 里的嵌入式 Python）启动子进程弹出窗口。按钮点击经
+        pywebview.api.handle(control_id) 回传到用户代码里 ui.on(...) 注册的处理函数。
+        窗体用 webview 渲染，不依赖 tkinter，因此嵌入式解释器（官方 embed zip）也能跑。
+        """
+        try:
+            controls = json.loads(form_json) if isinstance(form_json, str) else list(form_json)
+        except Exception:  # noqa: BLE001
+            controls = []
+        if not controls:
+            return {"ok": False, "error": "没有窗体控件，请先在「窗体设计」里添加按钮/标签/文本框"}
+
+        tmpdir = tempfile.mkdtemp(prefix="qform_")
+        try:
+            (Path(tmpdir) / "form.html").write_text(self._gen_form_html(controls), encoding="utf-8")
+            (Path(tmpdir) / "app.py").write_text(self._gen_form_app(controls, code), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return {"ok": False, "error": "生成窗体文件失败: " + str(exc)}
+
+        cmd = self._resolve_python(python)
+        self._fix_embedded_pth(cmd[0])
+        prep = self._ensure_module(cmd[0], "pywebview")
+        if not prep["ok"]:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return {"ok": False, "error": "无法为解释器准备 pywebview：" + (prep.get("output") or "")}
+
+        app_path = str(Path(tmpdir) / "app.py")
+        run_cmd = cmd + ["-u", app_path]
+        if self._has_window():
+            self._tmpdir = tmpdir
+            self._start_subprocess(run_cmd, app_path)
+            return {"ok": True, "async": True, "pid": self._proc.pid}
+        # 无界面（测试/CI）：仅跑一次做逻辑自检，窗口无法显示
+        try:
+            proc = subprocess.run(
+                run_cmd, check=False, cwd=str(self.root),
+                capture_output=True, text=True, encoding="utf-8", timeout=30,
+            )
+            return {"ok": proc.returncode == 0, "stdout": proc.stdout, "stderr": proc.stderr}
+        except subprocess.TimeoutExpired as exc:
+            return {"ok": False, "stdout": exc.stdout or "", "stderr": (exc.stderr or "") + "\n[超时]"}
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _ensure_module(self, python_exe: str, mod: str) -> dict:
+        """确保某个解释器里能用 mod；没有就 pip install（优先用已就绪的 pip）。"""
+        chk = subprocess.run(
+            [python_exe, "-c", "import " + mod],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+        if chk.returncode == 0:
+            return {"ok": True, "output": ""}
+        prep = self._ready_pip(python_exe)
+        if not prep["ok"]:
+            return prep
+        res = subprocess.run(
+            [python_exe, "-m", "pip", "install", mod],
+            check=False, capture_output=True, text=True, timeout=600, cwd=str(self.root),
+        )
+        if res.returncode == 0:
+            return {"ok": True, "output": (res.stdout or "")[-500:]}
+        return {"ok": False, "output": ((res.stderr or res.stdout or "")[:500])}
+
+    @staticmethod
+    def _esc(s: str) -> str:
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace('"', "&quot;"))
+
+    def _gen_form_html(self, controls: list) -> str:
+        parts = []
+        for c in controls:
+            cid = c.get("id", "")
+            ctype = c.get("type", "")
+            x = c.get("x", 20)
+            y = c.get("y", 20)
+            text = c.get("text", "")
+            style = "position:absolute;left:{}px;top:{}px;".format(x, y)
+            if ctype == "Button":
+                parts.append('<button id="{}" data-onclick style="{}">{}</button>'.format(cid, style, self._esc(text)))
+            elif ctype == "Label":
+                parts.append('<div id="{}" style="{}">{}</div>'.format(cid, style, self._esc(text)))
+            elif ctype == "TextBox":
+                parts.append('<input id="{}" style="{}width:220px;" />'.format(cid, style))
+        return FORM_HTML_TEMPLATE.replace("__BODY__", "\n".join(parts))
+
+    def _gen_form_app(self, controls: list, code: str) -> str:
+        form_json = json.dumps(controls, ensure_ascii=False)
+        return FORM_APP_TEMPLATE.replace("__FORM__", form_json).replace("__USER_CODE__", code or "")
 
     # ---------------------------------------------------------- 内部工具
     def _resolve_python(self, python: str | None) -> list[str]:
@@ -451,6 +619,12 @@ class Api:
             except OSError:
                 pass
             self._tmp = None
+        if self._tmpdir:
+            try:
+                shutil.rmtree(self._tmpdir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
+            self._tmpdir = None
         self._proc = None
 
     def _run_subprocess(self, code: str, python: str | None) -> dict:

@@ -15,6 +15,7 @@
       <button id="btn-new" title="在根目录新建文件">新建</button>
       <button id="btn-save" title="Ctrl+S">保存</button>
       <button id="btn-run" title="Ctrl+R 运行当前文件">▶ 运行</button>
+      <button id="btn-run-form" title="运行当前窗体（需先在窗体设计里添加控件）">▶ 运行窗体</button>
       <button id="btn-stop" disabled title="停止正在运行的代码">■ 停止</button>
       <span class="pip-group">
         <input id="pip-pkg" class="pip-input" placeholder="包名，如 requests" />
@@ -52,7 +53,7 @@
             <button data-type="Label">+ 标签</button>
             <button data-type="TextBox">+ 文本框</button>
             <button id="btn-export-form">导出 form.ui.json</button>
-            <span class="muted">（拖动控件排版，导出为 JSON）</span>
+            <span class="muted">（控件 id 在运行日志里显示，控制器用 ui.on("id", fn) 绑定）</span>
           </div>
           <div id="form-canvas" class="form-canvas"></div>
         </div>

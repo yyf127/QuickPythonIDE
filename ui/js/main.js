@@ -362,6 +362,32 @@
     else logLine(res.error || "停止失败", "err");
   }
 
+  // 运行「窗体设计」里的控件 + 编辑器里的控制器代码，弹出真实窗口。
+  // 控件 id 在日志中打印，控制器用 ui.on("id", fn) 绑定按钮，ui.get/ui.set 读写控件。
+  async function runForm() {
+    if (!formControls.length) {
+      logLine("请先在「窗体设计」里添加控件（按钮/标签/文本框）", "err");
+      return;
+    }
+    const code = editor.getValue();
+    const py = document.getElementById("py-version").value || "";
+    clearLog();
+    const ids = formControls.map(function (c) {
+      const t = c.type === "Button" ? "按钮" : c.type === "Label" ? "标签" : "文本框";
+      return c.id + "(" + t + ")";
+    }).join(", ");
+    logLine("启动窗体，运行在 " + (py || "默认解释器") + "（首次会自动 pip install pywebview）", "ok");
+    logLine("控件ID: " + ids, "warn");
+    const res = await api().run_form(JSON.stringify(formControls), code, py);
+    if (!res.ok) {
+      logLine(res.error || "窗体启动失败", "err");
+      return;
+    }
+    // 异步模式：输出经 window.appendOutput 推回；结束经 window.onRunFinished 复位按钮
+    document.getElementById("btn-run").disabled = true;
+    document.getElementById("btn-stop").disabled = false;
+  }
+
   // 宿主推流回调：实时把子进程输出写入日志面板
   window.appendOutput = function (text, kind) {
     logLine(text, kind);
@@ -376,12 +402,14 @@
     const sel = document.getElementById("py-version");
     if (!sel) return;
     const res = await api().python_versions();
+    let embeddedPath = null;
     if (res.ok && res.versions.length) {
       res.versions.forEach(function (v) {
         const o = document.createElement("option");
         o.value = v.path;
         o.textContent = v.label || v.path;
         sel.appendChild(o);
+        if (v.embedded && !embeddedPath) embeddedPath = v.path;
       });
     } else {
       const o = document.createElement("option");
@@ -389,6 +417,8 @@
       o.textContent = "默认 Python";
       sel.appendChild(o);
     }
+    // 默认用 root/ 里的嵌入式解释器（免安装、不依赖系统 Python）
+    if (embeddedPath) sel.value = embeddedPath;
     updateStatus();
   }
 
@@ -423,6 +453,7 @@
     ctrl.textContent = text;
     const id = "c" + ++ctrlId;
     ctrl.dataset.id = id;
+    ctrl.title = id; // 便于在控制器里用 ui.on("c1", fn) 绑定
     canvas.appendChild(ctrl);
     formControls.push({ id: id, type: type, x: x, y: y, text: text });
     bindControlDrag(ctrl);
@@ -511,6 +542,7 @@
     document.getElementById("btn-run").onclick = runActive;
     document.getElementById("btn-save").onclick = saveActive;
     document.getElementById("btn-stop").onclick = stopActive;
+    document.getElementById("btn-run-form").onclick = runForm;
     document.getElementById("btn-pip").onclick = installPip;
     document.getElementById("btn-backup").onclick = backupActive;
     document.getElementById("btn-clear-log").onclick = clearLog;
