@@ -126,23 +126,32 @@ def test_python_versions_has_embedded_field():
     assert all({"path", "label", "embedded"} <= set(v.keys()) for v in res["versions"])
 
 
-def test_gen_form_html_and_app():
-    # 窗体生成的 form.html / app.py 必须合法且含桥接逻辑（无需 GUI）
+def test_gen_form_tk_app():
+    # 窗体生成的 tkinter app.py 必须合法且含 ui 桥接逻辑（无需 GUI）
     api = Api()
     controls = [
         {"id": "c1", "type": "Button", "x": 20, "y": 20, "text": "go"},
         {"id": "c2", "type": "TextBox", "x": 20, "y": 60, "text": ""},
         {"id": "c3", "type": "Label", "x": 20, "y": 100, "text": "<b>x</b>"},
+        {"id": "c4", "type": "TextArea", "x": 20, "y": 140, "text": ""},
     ]
-    html = api._gen_form_html(controls)
-    assert '<button id="c1" data-onclick' in html
-    assert '<input id="c2"' in html
-    assert '<div id="c3"' in html
-    assert "&lt;b&gt;" in html  # 文本做了 HTML 转义
     app = api._gen_form_app(controls, 'ui.on("c1", lambda: None)\n')
     compile(app, "<formapp>", "exec")  # 生成的 app.py 语法合法
-    assert "def handle(self, control_id)" in app  # pywebview 回传桥
+    assert "import tkinter as tk" in app
+    assert 'tk.Button(root, text=' in app
+    assert "tk.Label(root, text='<b>x</b>')" in app
+    assert "tk.Entry(root" in app
+    assert "tk.Text(root" in app
+    assert "_widgets" in app  # 控件注册表
     assert 'ui.on("c1"' in app
+    assert "root.mainloop()" in app
+    assert "root.geometry(" in app
+
+
+def test_check_tkinter_on_missing_returns_error():
+    # 指向一个不存在的解释器，check_tkinter 应返回 ok=False 且不崩溃
+    res = Api().check_tkinter("C:/no-such-python/python.exe")
+    assert res["ok"] is False
 
 
 def test_run_form_requires_controls():

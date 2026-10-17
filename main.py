@@ -62,75 +62,84 @@ def _app_root() -> Path:
 APP_ROOT = _app_root()
 UI_DIR = APP_ROOT / "ui"
 
-# 窗体运行：生成的 app.py 模板（__FORM__ / __USER_CODE__ 由宿主替换）。
-# 用 pywebview 渲染窗体，按钮点击经 pywebview.api.handle(id) 回传到用户代码 ui.on(id, fn)。
-FORM_APP_TEMPLATE = """import webview
+# 窗体运行：生成的 app.py 模板（__GEOM__ / __CONTROLS__ / __USER_CODE__ 由宿主替换）。
+# 用 tkinter 渲染窗体（标准库、原生 GUI，大多数人习惯），按钮点击经 ui.on(id, fn) 回传到
+# 用户代码；ui.get/ui.set 读写控件内容。tkinter 是标准库但需 Tcl/Tk 运行文件，嵌入式
+# 解释器（官方 embed zip）默认不含，缺失时由 _ensure_tkinter 尝试自动补齐。
+FORM_TK_TEMPLATE = '''import tkinter as tk
+import traceback
 
-FORM = __FORM__
+root = tk.Tk()
+root.title("QuickPythonIDE 窗体")
+root.geometry("__GEOM__")
+_widgets = {}
 
-_user_handlers = {}
-_window = None
+def _build():
+__CONTROLS__
+
+_build()
 
 class _UI:
-    @staticmethod
-    def on(control_id, fn):
-        _user_handlers[control_id] = fn
-    @staticmethod
-    def get(control_id):
-        if _window is None:
+    def get(self, cid):
+        w = _widgets.get(cid)
+        if w is None:
             return ""
-        return _window.evaluate_js("__val(" + repr(control_id) + ")") or ""
-    @staticmethod
-    def set(control_id, value):
-        if _window is not None:
-            _window.evaluate_js("__set(" + repr(control_id) + ", " + repr(str(value)) + ")")
+        cls = w.winfo_class()
+        try:
+            if cls == "Entry":
+                return w.get()
+            if cls == "Text":
+                return w.get("1.0", "end-1c")
+            if cls in ("Label", "Button"):
+                return w.cget("text")
+        except Exception:
+            return ""
+        return ""
+
+    def set(self, cid, value):
+        w = _widgets.get(cid)
+        if w is None:
+            return
+        cls = w.winfo_class()
+        s = str(value)
+        try:
+            if cls == "Entry":
+                w.delete(0, "end"); w.insert(0, s)
+            elif cls == "Text":
+                w.delete("1.0", "end"); w.insert("1.0", s)
+            elif cls in ("Label", "Button"):
+                w.config(text=s)
+        except Exception:
+            pass
+
+    def on(self, cid, fn):
+        w = _widgets.get(cid)
+        if w is None:
+            return
+        cls = w.winfo_class()
+        if cls == "Button":
+            w.config(command=lambda: _safe(fn))
+        elif cls == "Entry":
+            w.bind("<Return>", lambda e: _safe(fn))
+        elif cls == "Text":
+            w.bind("<KeyRelease>", lambda e: _safe(fn))
+
+    def title(self, t):
+        root.title(str(t))
+
+def _safe(fn):
+    try:
+        fn()
+    except Exception as e:
+        print("控件回调出错:", e)
+        traceback.print_exc()
 
 ui = _UI()
 
 __USER_CODE__
 
-class _Controller:
-    def handle(self, control_id):
-        fn = _user_handlers.get(control_id)
-        if fn:
-            try:
-                fn()
-            except Exception as e:
-                if _window is not None:
-                    _window.evaluate_js("__log(" + repr(str(e)) + ")")
-
-def main():
-    global _window
-    _window = webview.create_window("QuickPythonIDE - 窗体", "form.html", js_api=_Controller())
-    webview.start()
-
-if __name__ == "__main__":
-    main()
-"""
-
-# 窗体运行：生成的 form.html 模板（__BODY__ 由宿主替换成控件）。
-FORM_HTML_TEMPLATE = """<!doctype html>
-<html><head><meta charset="utf-8"><style>
-  body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:#f3f3f3;margin:0;min-height:100vh;}
-  button{padding:6px 14px;cursor:pointer;}
-  input{padding:4px;}
-  #__log{position:absolute;left:8px;right:8px;bottom:8px;height:70px;overflow:auto;background:#222;color:#9f9;font-size:12px;padding:4px;white-space:pre-wrap;}
-</style></head>
-<body>
-__BODY__
-<script>
-function __set(id,v){var el=document.getElementById(id);if(!el)return;if('value'in el)el.value=v;else el.textContent=v;}
-function __val(id){var el=document.getElementById(id);if(!el)return '';return ('value'in el)?el.value:el.textContent;}
-function __log(s){var c=document.getElementById('__log');if(c)c.textContent+=(s==null?'':s)+'\\n';}
-document.addEventListener('pywebviewready',function(){
-  document.querySelectorAll('[data-onclick]').forEach(function(b){
-    b.onclick=function(){if(window.pywebview)pywebview.api.handle(b.id);};
-  });
-});
-</script>
-<pre id="__log"></pre>
-</body></html>
-"""
+root.mainloop()
+'''
 
 
 class Api:
@@ -370,42 +379,51 @@ class Api:
 
     # ============================================================== 窗体运行
     def run_form(self, form_json: str | list, code: str, python: str | None = None) -> dict:
-        """把「窗体设计」生成的控件 + 用户写的控制器代码，跑成一个真实窗口。
+        """把「窗体设计」生成的控件 + 用户写的控制器代码，跑成一个 tkinter 真实窗口。
 
-        生成自包含的 app.py（内嵌 pywebview 桥）+ form.html，用选中的解释器
-        （默认 root/ 里的嵌入式 Python）启动子进程弹出窗口。按钮点击经
-        pywebview.api.handle(control_id) 回传到用户代码里 ui.on(...) 注册的处理函数。
-        窗体用 webview 渲染，不依赖 tkinter，因此嵌入式解释器（官方 embed zip）也能跑。
+        生成自包含的 tkinter app.py，用选中的解释器（默认 root/ 里的嵌入式 Python）
+        启动子进程弹出原生窗口。按钮点击经 ui.on(control_id, fn) 回传到用户代码里的函数，
+        ui.get/ui.set 读写控件内容。tkinter 是标准库但需要 Tcl/Tk 运行文件：嵌入式解释器
+        默认不含，run_form 会先检测，缺失则尝试自动补齐（_ensure_tkinter）。
         """
         try:
             controls = json.loads(form_json) if isinstance(form_json, str) else list(form_json)
         except Exception:  # noqa: BLE001
             controls = []
         if not controls:
-            return {"ok": False, "error": "没有窗体控件，请先在「窗体设计」里添加按钮/标签/文本框"}
+            return {"ok": False, "error": "没有窗体控件，请先在「窗体设计」里添加按钮/标签/文本框/多行文本"}
 
         tmpdir = tempfile.mkdtemp(prefix="qform_")
         try:
-            (Path(tmpdir) / "form.html").write_text(self._gen_form_html(controls), encoding="utf-8")
-            (Path(tmpdir) / "app.py").write_text(self._gen_form_app(controls, code), encoding="utf-8")
+            app_path = Path(tmpdir) / "app.py"
+            app_path.write_text(self._gen_form_app(controls, code), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             shutil.rmtree(tmpdir, ignore_errors=True)
             return {"ok": False, "error": "生成窗体文件失败: " + str(exc)}
 
         cmd = self._resolve_python(python)
         self._fix_embedded_pth(cmd[0])
-        prep = self._ensure_module(cmd[0], "pywebview")
-        if not prep["ok"]:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            return {"ok": False, "error": "无法为解释器准备 pywebview：" + (prep.get("output") or "")}
+        # tkinter 是标准库但需 Tcl/Tk 运行文件；嵌入式解释器默认没有，先检测再尝试修复
+        chk = self.check_tkinter(cmd[0])
+        if not chk["ok"]:
+            fix = self._ensure_tkinter(cmd[0])
+            if not fix["ok"]:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                msg = "当前解释器缺少 tkinter 所需的 Tcl/Tk 运行文件（tkinter 无法通过 pip 安装）。"
+                if fix.get("need_copy"):
+                    msg += "\n请为 Python {} 补齐：把同版本完整 Python 的 tcl/ 目录、_tkinter.pyd、" \
+                           "tcl*.dll、tk*.dll 拷到 {} 。".format(
+                               fix.get("target") or "?", Path(cmd[0]).resolve().parent)
+                if fix.get("detail"):
+                    msg += "\n细节: " + fix["detail"]
+                return {"ok": False, "error": msg}
 
-        app_path = str(Path(tmpdir) / "app.py")
-        run_cmd = cmd + ["-u", app_path]
+        run_cmd = cmd + ["-u", str(app_path)]
         if self._has_window():
             self._tmpdir = tmpdir
-            self._start_subprocess(run_cmd, app_path)
+            self._start_subprocess(run_cmd, str(app_path))
             return {"ok": True, "async": True, "pid": self._proc.pid}
-        # 无界面（测试/CI）：仅跑一次做逻辑自检，窗口无法显示
+        # 无界面（测试/CI）：仅做语法/导入自检，窗口无法显示
         try:
             proc = subprocess.run(
                 run_cmd, check=False, cwd=str(self.root),
@@ -436,41 +454,260 @@ class Api:
             return {"ok": True, "output": (res.stdout or "")[-500:]}
         return {"ok": False, "output": ((res.stderr or res.stdout or "")[:500])}
 
+    # ----------------------------------------------------- tkinter 检测/修复
+    def check_tkinter(self, python: str | None = None) -> dict:
+        """检查指定解释器能否 import tkinter（需要 Tcl/Tk 运行文件）。
+
+        tkinter 是标准库，但官方 embeddable 包砍掉了 Tcl/Tk，所以 ``pip install tkinter``
+        无效；这里直接尝试真实导入。withdraw 避免检测时弹出窗口。
+        """
+        exe = self._resolve_python(python)[0]
+        try:
+            chk = subprocess.run(
+                [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
+                check=False, capture_output=True, text=True, timeout=30,
+            )
+        except Exception as exc:  # noqa: BLE001 - 解释器不存在/无法启动都应视为不可用
+            return {"ok": False, "error": str(exc), "python": exe}
+        return {
+            "ok": chk.returncode == 0,
+            "error": (chk.stderr or "")[:400] if chk.returncode else "",
+            "python": exe,
+        }
+
+    def ensure_tkinter(self, python: str | None = None) -> dict:
+        """尝试让指定解释器可用 tkinter：已可用则直接返回；否则尝试从同版本完整 Python
+        复制 Tcl/Tk 运行文件到嵌入解释器目录。无法自动修复时返回 need_copy=True 及指引。
+        """
+        exe = self._resolve_python(python)[0]
+        return self._ensure_tkinter(exe)
+
+    def _ensure_tkinter(self, exe: str) -> dict:
+        try:
+            chk = subprocess.run(
+                [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
+                check=False, capture_output=True, text=True, timeout=30,
+            )
+        except Exception as exc:  # noqa: BLE001
+            chk = None
+            chk_err = str(exc)
+        else:
+            chk_err = (chk.stderr or "")[:400] if chk.returncode else ""
+        if chk is not None and chk.returncode == 0:
+            return {"ok": True, "action": "tkinter 已可用"}
+        target = self._py_version(exe)
+        src = self._find_tk_source(target, exe)
+        if not src:
+            return {
+                "ok": False,
+                "action": "需要手动补齐 Tcl/Tk 文件（tkinter 是标准库但需 Tcl/Tk 运行文件，pip 装不了）",
+                "need_copy": True,
+                "target": target,
+                "dest": str(Path(exe).resolve().parent),
+            }
+        self._copy_tk(src, exe)
+        try:
+            chk2 = subprocess.run(
+                [exe, "-c", "import tkinter; r=tkinter.Tk(); r.withdraw(); r.destroy()"],
+                check=False, capture_output=True, text=True, timeout=30,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "action": "复制后仍然无法使用 tkinter",
+                "need_copy": True,
+                "detail": str(exc)[:400],
+                "target": target,
+                "dest": str(Path(exe).resolve().parent),
+            }
+        if chk2.returncode == 0:
+            return {"ok": True, "action": "已从 {} 复制 Tcl/Tk，tkinter 现已可用".format(src)}
+        return {
+            "ok": False,
+            "action": "复制后仍然无法使用 tkinter",
+            "need_copy": True,
+            "detail": (chk2.stderr or "")[:400],
+            "target": target,
+            "dest": str(Path(exe).resolve().parent),
+        }
+
+    @staticmethod
+    def _py_version(exe: str) -> str | None:
+        try:
+            out = subprocess.run(
+                [exe, "-c", "import sys;print('.'.join(map(str,sys.version_info[:2])))"],
+                check=False, capture_output=True, text=True, timeout=20,
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return (out.stdout or "").strip() or None
+
+    def _find_tk_source(self, target_ver: str | None, embed_exe: str) -> str | None:
+        """在同版本、且自身可用 tkinter 的完整 Python 里找一个，作为 Tcl/Tk 文件来源。
+
+        扫描：受管运行时目录、常见完整安装目录、PATH。仅当版本号（major.minor）完全匹配才采用，
+        避免 Tcl/Tk ABI 不一致。不创建窗口（仅 import 检测）。
+        """
+        if not target_ver:
+            return None
+        candidates: list[str] = []
+        mgr = Path(os.path.expanduser("~")) / ".workbuddy" / "binaries" / "python" / "versions"
+        if mgr.is_dir():
+            for sub in mgr.iterdir():
+                c = sub / "python.exe"
+                if c.exists():
+                    candidates.append(str(c))
+        for base in (
+            "C:/Program Files",
+            "C:/Program Files (x86)",
+            os.path.expanduser("~/AppData/Local/Programs/Python"),
+            "C:/Python",
+        ):
+            d = Path(base)
+            if not d.is_dir():
+                continue
+            for sub in d.iterdir():
+                c = sub / "python.exe"
+                if c.exists():
+                    candidates.append(str(c))
+        for d in os.environ.get("PATH", "").split(os.pathsep):
+            for cand in ("python.exe", "python3.exe"):
+                p = Path(d) / cand
+                if p.exists():
+                    candidates.append(str(p))
+        embed = Path(embed_exe).resolve()
+        for cand in candidates:
+            if Path(cand).resolve() == embed:
+                continue
+            if self._py_version(cand) != target_ver:
+                continue
+            try:
+                chk = subprocess.run(
+                    [cand, "-c", "import tkinter"],
+                    check=False, capture_output=True, text=True, timeout=30,
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if chk.returncode == 0:
+                return cand
+        return None
+
+    def _copy_tk(self, src_exe: str, embed_exe: str) -> None:
+        """从完整 Python（src_exe）复制 Tcl/Tk 运行文件到嵌入解释器（embed_exe）目录。
+
+        复制：tcl/ 目录、tcl*.dll/tk*.dll/zlib1.dll、DLLs/_tkinter.pyd、Lib/tkinter 包；
+        并在 ._pth 中追加 .\\DLLs 与 Lib\\site-packages 搜索路径（启用 import site 后生效）。
+        """
+        src = Path(src_exe).resolve().parent
+        dst = Path(embed_exe).resolve().parent
+        try:
+            import shutil as _sh
+
+            tcl = src / "tcl"
+            if tcl.is_dir():
+                d = dst / "tcl"
+                if not d.exists():
+                    _sh.copytree(tcl, d)
+            for pat in ("tcl*.dll", "tk*.dll", "zlib1.dll"):
+                for f in src.glob(pat):
+                    try:
+                        _sh.copy2(f, dst / f.name)
+                    except OSError:  # noqa: BLE001
+                        pass
+            tkd = src / "DLLs" / "_tkinter.pyd"
+            if tkd.exists():
+                _sh.copy2(tkd, dst / "_tkinter.pyd")
+            tkpkg = src / "Lib" / "tkinter"
+            if tkpkg.is_dir():
+                sp = dst / "Lib" / "site-packages" / "tkinter"
+                if not sp.exists():
+                    _sh.copytree(tkpkg, sp)
+            # 确保 embed ._pth 启用 import site 并加入 .\DLLs / Lib\site-packages 路径
+            self._fix_embedded_pth(str(embed_exe))
+            for name in os.listdir(dst):
+                if name.endswith("._pth"):
+                    p = dst / name
+                    txt = p.read_text(encoding="utf-8")
+                    added = False
+                    if "DLLs" not in txt:
+                        txt += "\n.\\DLLs"
+                        added = True
+                    if "site-packages" not in txt:
+                        txt += "\nLib\\site-packages"
+                        added = True
+                    if added:
+                        p.write_text(txt, encoding="utf-8")
+                    break
+        except Exception:  # noqa: BLE001 - 复制到一半失败也不致命，交由后续检测判断
+            pass
+
     @staticmethod
     def _esc(s: str) -> str:
         return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 .replace('"', "&quot;"))
 
-    def _gen_form_html(self, controls: list) -> str:
-        parts = []
+    def _gen_form_app(self, controls: list, code: str) -> str:
+        """生成 tkinter 窗体 app.py 源码（自包含，含 ui 桥接，无需 webview）。"""
+        lines = []
         for c in controls:
             cid = c.get("id", "")
             ctype = c.get("type", "")
-            x = c.get("x", 20)
-            y = c.get("y", 20)
+            try:
+                x = int(c.get("x", 20)); y = int(c.get("y", 20))
+            except Exception:  # noqa: BLE001
+                x, y = 20, 20
             text = c.get("text", "")
-            style = "position:absolute;left:{}px;top:{}px;".format(x, y)
             if ctype == "Button":
-                parts.append('<button id="{}" data-onclick style="{}">{}</button>'.format(cid, style, self._esc(text)))
+                t = text or "按钮"
+                lines.append('    w = tk.Button(root, text={!r}); w.place(x={}, y={}); _widgets[{!r}] = w'.format(t, x, y, cid))
             elif ctype == "Label":
-                parts.append('<div id="{}" style="{}">{}</div>'.format(cid, style, self._esc(text)))
+                lines.append('    w = tk.Label(root, text={!r}); w.place(x={}, y={}); _widgets[{!r}] = w'.format(text, x, y, cid))
             elif ctype == "TextBox":
-                parts.append('<input id="{}" style="{}width:220px;" />'.format(cid, style))
-        return FORM_HTML_TEMPLATE.replace("__BODY__", "\n".join(parts))
+                lines.append('    w = tk.Entry(root, width=24); w.place(x={}, y={}); _widgets[{!r}] = w'.format(x, y, cid))
+            elif ctype == "TextArea":
+                lines.append('    w = tk.Text(root, width=30, height=8); w.place(x={}, y={}); _widgets[{!r}] = w'.format(x, y, cid))
+        controls_code = "\n".join(lines)
+        geom = self._form_geometry(controls)
+        return (FORM_TK_TEMPLATE
+                .replace("__GEOM__", geom)
+                .replace("__CONTROLS__", controls_code)
+                .replace("__USER_CODE__", code or ""))
 
-    def _gen_form_app(self, controls: list, code: str) -> str:
-        form_json = json.dumps(controls, ensure_ascii=False)
-        return FORM_APP_TEMPLATE.replace("__FORM__", form_json).replace("__USER_CODE__", code or "")
+    @staticmethod
+    def _form_geometry(controls: list) -> str:
+        mx, my = 320, 240
+        for c in controls:
+            try:
+                mx = max(mx, int(c.get("x", 0)) + 260)
+                my = max(my, int(c.get("y", 0)) + 80)
+            except Exception:  # noqa: BLE001
+                pass
+        return "{}x{}".format(mx, my)
 
     # ---------------------------------------------------------- 内部工具
     def _resolve_python(self, python: str | None) -> list[str]:
         if not python:
+            # 冻结成 exe 后，sys.executable 是 IDE 自身，不能拿来跑用户脚本，
+            # 默认回落到 root/ 下的嵌入式解释器（免安装、不依赖系统 Python）。
+            if getattr(sys, "frozen", False):
+                emb = self._default_embedded()
+                if emb:
+                    return [emb]
             return [sys.executable]
         # 整段就是一个存在的可执行文件（可能含空格，如嵌入解释器路径）→ 直接用
         if os.path.isfile(python):
             return [python]
         # 否则按 shell 方式拆分，支持 "py -3.11" 这类带参数的写法
         return shlex.split(python)
+
+    def _default_embedded(self) -> str | None:
+        """root/ 下第一个嵌入式解释器路径（部署包约定的自带 Python 池）。"""
+        root_dir = APP_ROOT / "root"
+        if root_dir.is_dir():
+            for sub in sorted(root_dir.iterdir()):
+                if sub.is_dir() and (sub / "python.exe").exists():
+                    return str(sub / "python.exe")
+        return None
 
     # ----------------------------------------------------- 嵌入解释器准备
     def _fix_embedded_pth(self, python_exe: str) -> None:

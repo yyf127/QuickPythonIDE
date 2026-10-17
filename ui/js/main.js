@@ -362,22 +362,42 @@
     else logLine(res.error || "停止失败", "err");
   }
 
-  // 运行「窗体设计」里的控件 + 编辑器里的控制器代码，弹出真实窗口。
+  // 运行「窗体设计」里的控件 + 编辑器里的控制器代码，弹出 tkinter 真实窗口。
   // 控件 id 在日志中打印，控制器用 ui.on("id", fn) 绑定按钮，ui.get/ui.set 读写控件。
+  // 运行前先检测当前解释器是否有 tkinter（标准库，但需 Tcl/Tk 运行文件）；缺失则尝试自动修复。
   async function runForm() {
     if (!formControls.length) {
-      logLine("请先在「窗体设计」里添加控件（按钮/标签/文本框）", "err");
+      logLine("请先在「窗体设计」里添加控件（按钮/标签/文本框/多行文本）", "err");
       return;
     }
     const code = editor.getValue();
     const py = document.getElementById("py-version").value || "";
     clearLog();
     const ids = formControls.map(function (c) {
-      const t = c.type === "Button" ? "按钮" : c.type === "Label" ? "标签" : "文本框";
+      const t = c.type === "Button" ? "按钮" : c.type === "Label" ? "标签"
+        : c.type === "TextBox" ? "文本框" : c.type === "TextArea" ? "多行文本" : c.type;
       return c.id + "(" + t + ")";
     }).join(", ");
-    logLine("启动窗体，运行在 " + (py || "默认解释器") + "（首次会自动 pip install pywebview）", "ok");
+    logLine("启动 tkinter 窗体，运行在 " + (py || "默认解释器") + " ...", "ok");
     logLine("控件ID: " + ids, "warn");
+    logLine("tkinter 是标准库但需 Tcl/Tk 运行文件；若解释器缺失会自动尝试修复。", "out");
+
+    // 1) 检测 tkinter 是否可用
+    let chk = await api().check_tkinter(py);
+    if (!chk.ok) {
+      logLine("未检测到 tkinter（" + (chk.error || "未知原因") + "），尝试自动修复…", "warn");
+      const fix = await api().ensure_tkinter(py);
+      if (!fix.ok) {
+        logLine("⚠️ 无法自动修复 tkinter。", "err");
+        if (fix.target) logLine("需要为 Python " + fix.target + " 补齐 Tcl/Tk 文件。", "err");
+        if (fix.dest) logLine("目标目录: " + fix.dest, "err");
+        logLine("补齐方法：下载同版本完整 Python 安装包，把其中的 tcl/ 目录、_tkinter.pyd、tcl*.dll、tk*.dll 拷到上面的目标目录；或用「修复 Tk」按钮再试。", "err");
+        return;
+      }
+      logLine("已修复：" + (fix.action || ""), "ok");
+    }
+
+    // 2) 真正运行窗体
     const res = await api().run_form(JSON.stringify(formControls), code, py);
     if (!res.ok) {
       logLine(res.error || "窗体启动失败", "err");
@@ -386,6 +406,31 @@
     // 异步模式：输出经 window.appendOutput 推回；结束经 window.onRunFinished 复位按钮
     document.getElementById("btn-run").disabled = true;
     document.getElementById("btn-stop").disabled = false;
+  }
+
+  // 单独检测当前解释器的 tkinter 可用性（不运行窗体）
+  async function checkTk() {
+    const py = document.getElementById("py-version").value || "";
+    const res = await api().check_tkinter(py);
+    if (res.ok) {
+      logLine("✅ 当前解释器可用 tkinter：" + res.python, "ok");
+    } else {
+      logLine("❌ 当前解释器缺少 tkinter：" + (res.error || ""), "err");
+      logLine("提示：tkinter 无法通过 pip 安装，缺的是 Tcl/Tk 运行文件。点「修复 Tk」自动尝试补齐。", "out");
+    }
+  }
+
+  // 自动尝试补齐 Tcl/Tk 运行文件（从同版本完整 Python 复制）
+  async function fixTk() {
+    const py = document.getElementById("py-version").value || "";
+    logLine("尝试修复 tkinter（自动从同版本完整 Python 复制 Tcl/Tk 文件）…", "warn");
+    const res = await api().ensure_tkinter(py);
+    if (res.ok) {
+      logLine("✅ " + (res.action || "tkinter 已可用"), "ok");
+    } else {
+      logLine("⚠️ " + (res.action || "修复失败"), "err");
+      if (res.target) logLine("需要为 Python " + res.target + " 补齐 Tcl/Tk 文件到 " + (res.dest || ""), "err");
+    }
   }
 
   // 宿主推流回调：实时把子进程输出写入日志面板
@@ -449,7 +494,8 @@
     const y = 20 + Math.floor(formControls.length / 6) * 50;
     ctrl.style.left = x + "px";
     ctrl.style.top = y + "px";
-    const text = type === "Button" ? "按钮" : type === "Label" ? "标签" : "文本框";
+    const text = type === "Button" ? "按钮" : type === "Label" ? "标签"
+      : type === "TextBox" ? "文本框" : type === "TextArea" ? "多行文本" : type;
     ctrl.textContent = text;
     const id = "c" + ++ctrlId;
     ctrl.dataset.id = id;
@@ -585,6 +631,8 @@
       b.onclick = function () { addControl(b.dataset.type); };
     });
     document.getElementById("btn-export-form").onclick = exportForm;
+    document.getElementById("btn-check-tk").onclick = checkTk;
+    document.getElementById("btn-fix-tk").onclick = fixTk;
 
     // 全局：点击/滚动关闭右键菜单
     document.addEventListener("click", hideCtx);

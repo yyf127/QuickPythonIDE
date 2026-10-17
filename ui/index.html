@@ -52,7 +52,11 @@
             <button data-type="Button">+ 按钮</button>
             <button data-type="Label">+ 标签</button>
             <button data-type="TextBox">+ 文本框</button>
+            <button data-type="TextArea">+ 多行文本</button>
             <button id="btn-export-form">导出 form.ui.json</button>
+            <span class="palette-sep">|</span>
+            <button id="btn-check-tk" title="检测当前解释器是否可用 tkinter">检查 Tk 环境</button>
+            <button id="btn-fix-tk" title="自动尝试补齐 Tcl/Tk 运行文件">修复 Tk</button>
             <span class="muted">（控件 id 在运行日志里显示，控制器用 ui.on("id", fn) 绑定）</span>
           </div>
           <div id="form-canvas" class="form-canvas"></div>
